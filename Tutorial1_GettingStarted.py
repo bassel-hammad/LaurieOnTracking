@@ -12,9 +12,10 @@ Data can be found at: https://github.com/metrica-sports/sample-data
 
 import Metrica_IO as mio
 import Metrica_Viz as mviz
+import matplotlib.pyplot as plt
 
 # set up initial path to data
-DATADIR = '/PATH/TO/WHERE/YOU/SAVED/THE/SAMPLE/DATA'
+DATADIR = 'Sample Data'
 game_id = 2 # let's look at sample match 2
 
 # read in the event data
@@ -57,9 +58,11 @@ home_goals['Minute'] = home_goals['Start Time [s]']/60.
 fig,ax = mviz.plot_pitch()
 ax.plot( events.loc[198]['Start X'], events.loc[198]['Start Y'], 'ro' )
 ax.annotate("", xy=events.loc[198][['End X','End Y']], xytext=events.loc[198][['Start X','Start Y']], alpha=0.6, arrowprops=dict(arrowstyle="->",color='r'))
+plt.show()
 
 # plot passing move in run up to goal
 mviz.plot_events( events.loc[190:198], indicators = ['Marker','Arrow'], annotate=True )
+plt.show()
 
 #### TRACKING DATA ####
 
@@ -76,19 +79,22 @@ tracking_away = mio.to_metric_coordinates(tracking_away)
 
 # Plot some player trajectories (players 11,1,2,3,4)
 fig,ax = mviz.plot_pitch()
-ax.plot( tracking_home['Home_11_x'].iloc[:1500], tracking_home['Home_11_y'].iloc[:1500], 'r.', MarkerSize=1)
-ax.plot( tracking_home['Home_1_x'].iloc[:1500], tracking_home['Home_1_y'].iloc[:1500], 'b.', MarkerSize=1)
-ax.plot( tracking_home['Home_2_x'].iloc[:1500], tracking_home['Home_2_y'].iloc[:1500], 'g.', MarkerSize=1)
-ax.plot( tracking_home['Home_3_x'].iloc[:1500], tracking_home['Home_3_y'].iloc[:1500], 'k.', MarkerSize=1)
-ax.plot( tracking_home['Home_4_x'].iloc[:1500], tracking_home['Home_4_y'].iloc[:1500], 'c.', MarkerSize=1)
+ax.plot( tracking_home['Home_11_x'].iloc[:1500], tracking_home['Home_11_y'].iloc[:1500], 'r.', markersize=1)
+ax.plot( tracking_home['Home_1_x'].iloc[:1500], tracking_home['Home_1_y'].iloc[:1500], 'b.', markersize=1)
+ax.plot( tracking_home['Home_2_x'].iloc[:1500], tracking_home['Home_2_y'].iloc[:1500], 'g.', markersize=1)
+ax.plot( tracking_home['Home_3_x'].iloc[:1500], tracking_home['Home_3_y'].iloc[:1500], 'k.', markersize=1)
+ax.plot( tracking_home['Home_4_x'].iloc[:1500], tracking_home['Home_4_y'].iloc[:1500], 'c.', markersize=1)
+plt.show()
 
 # plot player positions at ,atckick-off
 KO_Frame = events.loc[0]['Start Frame']
 fig,ax = mviz.plot_frame( tracking_home.loc[KO_Frame], tracking_away.loc[KO_Frame] )
+plt.show()
 
 # PLOT POISTIONS AT GOAL
 fig,ax = mviz.plot_events( events.loc[198:198], indicators = ['Marker','Arrow'], annotate=True )
 goal_frame = events.loc[198]['Start Frame']
 fig,ax = mviz.plot_frame( tracking_home.loc[goal_frame], tracking_away.loc[goal_frame], figax = (fig,ax) )
+plt.show()
 
 # END 

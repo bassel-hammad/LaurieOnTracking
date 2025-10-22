@@ -36,6 +36,87 @@ The 'player' class collects and stores trajectory information for each player re
 import numpy as np
 
 
+def _row_with_backfilled_velocities(team_df, frame_idx):
+    """Estimate missing/near-zero per-player velocities using neighboring frames.
+
+    Ensures the model uses realistic velocities at event frames.
+    """
+    row = team_df.loc[frame_idx].copy()
+    # Identify player x/y columns
+    x_columns = [c for c in row.keys() if c.endswith('_x') and c != 'ball_x']
+    y_columns = [c for c in row.keys() if c.endswith('_y') and c != 'ball_y']
+
+    # Neighbor indices
+    try:
+        prev_idx = team_df.index[team_df.index.get_loc(frame_idx) - 1]
+    except Exception:
+        prev_idx = None
+    try:
+        next_idx = team_df.index[team_df.index.get_loc(frame_idx) + 1]
+    except Exception:
+        next_idx = None
+
+    t0 = row.get('Time [s]', np.nan)
+    t_prev = team_df.loc[prev_idx]['Time [s]'] if prev_idx is not None else np.nan
+    t_next = team_df.loc[next_idx]['Time [s]'] if next_idx is not None else np.nan
+
+    def finite_diff(curr, prev, next_, dt_prev, dt_next):
+        if not np.isnan(prev) and not np.isnan(next_) and dt_prev > 0 and dt_next > 0:
+            return (next_ - prev) / (dt_prev + dt_next)
+        if not np.isnan(prev) and dt_prev > 0:
+            return (curr - prev) / dt_prev
+        if not np.isnan(next_) and dt_next > 0:
+            return (next_ - curr) / dt_next
+        return np.nan
+
+    tiny_speed = 1e-6
+    max_velocity = 9.0  # Maximum realistic football velocity (m/s)
+    
+    for x_col, y_col in zip(x_columns, y_columns):
+        base = x_col[:-2]
+        vx_col = f'{base}_vx'
+        vy_col = f'{base}_vy'
+
+        vx = row.get(vx_col, np.nan)
+        vy = row.get(vy_col, np.nan)
+        
+        if not (np.isnan(vx) or np.isnan(vy) or (abs(vx) + abs(vy) <= tiny_speed)):
+            # Cap existing velocity if it's too high
+            velocity_magnitude = np.sqrt(vx**2 + vy**2)
+            if velocity_magnitude > max_velocity:
+                scale_factor = max_velocity / velocity_magnitude
+                row[vx_col] = vx * scale_factor
+                row[vy_col] = vy * scale_factor
+            continue
+
+        x0 = row.get(x_col, np.nan)
+        y0 = row.get(y_col, np.nan)
+        x_prev = team_df.loc[prev_idx][x_col] if prev_idx is not None else np.nan
+        y_prev = team_df.loc[prev_idx][y_col] if prev_idx is not None else np.nan
+        x_next = team_df.loc[next_idx][x_col] if next_idx is not None else np.nan
+        y_next = team_df.loc[next_idx][y_col] if next_idx is not None else np.nan
+
+        dt_prev = t0 - t_prev if not np.isnan(t0) and not np.isnan(t_prev) else np.nan
+        dt_next = t_next - t0 if not np.isnan(t_next) and not np.isnan(t0) else np.nan
+
+        vx_est = finite_diff(x0, x_prev, x_next, dt_prev, dt_next)
+        vy_est = finite_diff(y0, y_prev, y_next, dt_prev, dt_next)
+
+        # Cap estimated velocity at maximum realistic speed
+        if not np.isnan(vx_est) and not np.isnan(vy_est):
+            velocity_magnitude = np.sqrt(vx_est**2 + vy_est**2)
+            if velocity_magnitude > max_velocity:
+                scale_factor = max_velocity / velocity_magnitude
+                vx_est = vx_est * scale_factor
+                vy_est = vy_est * scale_factor
+
+        if not np.isnan(vx_est):
+            row[vx_col] = vx_est
+        if not np.isnan(vy_est):
+            row[vy_col] = vy_est
+
+    return row
+
 def initialise_players(team,teamname,params,GKid):
     """
     initialise_players(team,teamname,params)
@@ -246,12 +327,15 @@ def generate_pitch_control_for_event(event_id, events, tracking_home, tracking_a
     PPCFa = np.zeros( shape = (len(ygrid), len(xgrid)) )
     PPCFd = np.zeros( shape = (len(ygrid), len(xgrid)) )
     # initialise player positions and velocities for pitch control calc (so that we're not repeating this at each grid cell position)
+    # Use backfilled velocities so model uses realistic speeds even if vx/vy missing/zero
+    home_row = _row_with_backfilled_velocities(tracking_home, pass_frame)
+    away_row = _row_with_backfilled_velocities(tracking_away, pass_frame)
     if pass_team=='Home':
-        attacking_players = initialise_players(tracking_home.loc[pass_frame],'Home',params,GK_numbers[0])
-        defending_players = initialise_players(tracking_away.loc[pass_frame],'Away',params,GK_numbers[1])
+        attacking_players = initialise_players(home_row,'Home',params,GK_numbers[0])
+        defending_players = initialise_players(away_row,'Away',params,GK_numbers[1])
     elif pass_team=='Away':
-        defending_players = initialise_players(tracking_home.loc[pass_frame],'Home',params,GK_numbers[0])
-        attacking_players = initialise_players(tracking_away.loc[pass_frame],'Away',params,GK_numbers[1])
+        defending_players = initialise_players(home_row,'Home',params,GK_numbers[0])
+        attacking_players = initialise_players(away_row,'Away',params,GK_numbers[1])
     else:
         assert False, "Team in possession must be either home or away"
         
@@ -319,25 +403,58 @@ def calculate_pitch_control_at_target(target_position, attacking_players, defend
         i = 1
         while 1-ptot>params['model_converge_tol'] and i<dT_array.size: 
             T = dT_array[i]
+            # Reset PPCF for this time step
+            PPCFatt[i] = PPCFatt[i-1]  # Start with previous value
+            PPCFdef[i] = PPCFdef[i-1]  # Start with previous value
+            
             for player in attacking_players:
                 # calculate ball control probablity for 'player' in time interval T+dt
                 dPPCFdT = (1-PPCFatt[i-1]-PPCFdef[i-1])*player.probability_intercept_ball( T ) * player.lambda_att
                 # make sure it's greater than zero
                 assert dPPCFdT>=0, 'Invalid attacking player probability (calculate_pitch_control_at_target)'
-                player.PPCF += dPPCFdT*params['int_dt'] # total contribution from individual player
-                PPCFatt[i] += player.PPCF # add to sum over players in the attacking team (remembering array element is zero at the start of each integration iteration)
+                PPCFatt[i] += dPPCFdT*params['int_dt'] # add to sum over players in the attacking team
             for player in defending_players:
                 # calculate ball control probablity for 'player' in time interval T+dt
                 dPPCFdT = (1-PPCFatt[i-1]-PPCFdef[i-1])*player.probability_intercept_ball( T ) * player.lambda_def
                 # make sure it's greater than zero
                 assert dPPCFdT>=0, 'Invalid defending player probability (calculate_pitch_control_at_target)'
-                player.PPCF += dPPCFdT*params['int_dt'] # total contribution from individual player
-                PPCFdef[i] += player.PPCF # add to sum over players in the defending team
+                PPCFdef[i] += dPPCFdT*params['int_dt'] # add to sum over players in the defending team
             ptot = PPCFdef[i]+PPCFatt[i] # total pitch control probability 
             i += 1
+        
+        # If integration failed to converge, use a fallback approach
         if i>=dT_array.size:
-            print("Integration failed to converge: %1.3f" % (ptot) )
-        return PPCFatt[i-1], PPCFdef[i-1]
+            print("Integration failed to converge: %1.3f, using fallback" % (ptot) )
+            # Use a simple fallback based on time-to-intercept
+            tau_min_att = np.nanmin( [p.simple_time_to_intercept(target_position) for p in attacking_players] )
+            tau_min_def = np.nanmin( [p.simple_time_to_intercept(target_position ) for p in defending_players] )
+            
+            if tau_min_att < tau_min_def:
+                # Attacking team arrives first
+                PPCFatt_final = 1.0
+                PPCFdef_final = 0.0
+            elif tau_min_def < tau_min_att:
+                # Defending team arrives first
+                PPCFatt_final = 0.0
+                PPCFdef_final = 1.0
+            else:
+                # Equal arrival times, split evenly
+                PPCFatt_final = 0.5
+                PPCFdef_final = 0.5
+        else:
+            PPCFatt_final = PPCFatt[i-1]
+            PPCFdef_final = PPCFdef[i-1]
+        
+        # Ensure probabilities sum to 1.0
+        total = PPCFatt_final + PPCFdef_final
+        if total > 0:
+            PPCFatt_final = PPCFatt_final / total
+            PPCFdef_final = PPCFdef_final / total
+        else:
+            PPCFatt_final = 0.5
+            PPCFdef_final = 0.5
+            
+        return PPCFatt_final, PPCFdef_final
 
 
 

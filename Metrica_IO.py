@@ -38,23 +38,43 @@ def tracking_data(DATADIR,game_id,teamname):
     tracking_data(DATADIR,game_id,teamname):
     read Metrica tracking data for game_id and return as a DataFrame. 
     teamname is the name of the team in the filename. For the sample data this is either 'Home' or 'Away'.
+    Enhanced with flexible player count support for custom datasets.
     '''
     teamfile = '/Sample_Game_%d/Sample_Game_%d_RawTrackingData_%s_Team.csv' % (game_id,game_id,teamname)
     # First:  deal with file headers so that we can get the player names correct
     csvfile =  open('{}/{}'.format(DATADIR, teamfile), 'r') # create a csv file reader
     reader = csv.reader(csvfile) 
-    teamnamefull = next(reader)[3].lower()
+    
+    # Row 0: Team names (extract team name from 4th column if available)
+    row0 = next(reader)
+    teamnamefull = row0[3].lower() if len(row0) > 3 else teamname.lower()
     print("Reading team: %s" % teamnamefull)
-    # construct column names
+    
+    # Row 1: Jersey numbers
     jerseys = [x for x in next(reader) if x != ''] # extract player jersey numbers from second row
-    columns = next(reader)
-    for i, j in enumerate(jerseys): # create x & y position column headers for each player
-        columns[i*2+3] = "{}_{}_x".format(teamname, j)
-        columns[i*2+4] = "{}_{}_y".format(teamname, j)
-    columns[-2] = "ball_x" # column headers for the x & y positions of the ball
-    columns[-1] = "ball_y"
+    
+    # Row 2: Column headers template (skip, we'll build our own)
+    next(reader)
+    
+    # Build dynamic column names based on actual number of players
+    columns = ['Period', 'Frame', 'Time [s]']  # First 3 columns
+    
+    # Add player columns (x, y pairs) - flexible for any number of players
+    for jersey in jerseys:
+        columns.extend([f"{teamname}_{jersey}_x", f"{teamname}_{jersey}_y"])
+    
+    # Add ball columns
+    columns.extend(["ball_x", "ball_y"])
+    
+    csvfile.close()
+    
     # Second: read in tracking data and place into pandas Dataframe
-    tracking = pd.read_csv('{}/{}'.format(DATADIR, teamfile), names=columns, index_col='Frame', skiprows=3)
+    tracking = pd.read_csv('{}/{}'.format(DATADIR, teamfile), names=columns, skiprows=3)
+    
+    # Set Frame as index if it exists and is not already the index
+    if 'Frame' in tracking.columns:
+        tracking = tracking.set_index('Frame')
+    
     return tracking
 
 def merge_tracking_data(home,away):
@@ -82,12 +102,30 @@ def to_metric_coordinates(data,field_dimen=(106.,68.) ):
 
 def to_single_playing_direction(home,away,events):
     '''
-    Flip coordinates in second half so that each team always shoots in the same direction through the match.
+    Flip coordinates so that each team always shoots in the same direction through the match.
+    This ensures consistent analysis regardless of which half the action occurs in.
+    
+    For World Cup Final data:
+    - Period 1: First half (no flip)
+    - Period 2: Second half (flip)
+    - Period 3: First half of extra time (no flip - same as period 1)
+    - Period 4: Second half of extra time (flip - same as period 2)
     '''
     for team in [home,away,events]:
-        second_half_idx = team.Period.idxmax(2)
         columns = [c for c in team.columns if c[-1].lower() in ['x','y']]
-        team.loc[second_half_idx:,columns] *= -1
+        
+        # Flip coordinates for period 2 (second half) - flip only period 2
+        if 2 in team['Period'].values:
+            period2_mask = team['Period'] == 2
+            team.loc[period2_mask, columns] *= -1
+            
+        # No flip for period 3 (first half of extra time) - same as period 1
+        
+        # Flip coordinates for period 4 (second half of extra time) - same as period 2
+        if 4 in team['Period'].values:
+            period4_mask = team['Period'] == 4
+            team.loc[period4_mask, columns] *= -1
+            
     return home,away,events
 
 def find_playing_direction(team,teamname):
@@ -103,6 +141,6 @@ def find_goalkeeper(team):
     Find the goalkeeper in team, identifying him/her as the player closest to goal at kick off
     ''' 
     x_columns = [c for c in team.columns if c[-2:].lower()=='_x' and c[:4] in ['Home','Away']]
-    GK_col = team.iloc[0][x_columns].abs().idxmax(axis=1)
+    GK_col = team.iloc[0][x_columns].abs().idxmax()
     return GK_col.split('_')[1]
     

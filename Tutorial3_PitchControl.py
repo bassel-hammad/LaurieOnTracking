@@ -19,10 +19,10 @@ import Metrica_Viz as mviz
 import Metrica_Velocities as mvel
 import Metrica_PitchControl as mpc
 import numpy as np
+import matplotlib.pyplot as plt
 
 # set up initial path to data
-DATADIR = '/PATH/TO/WHERE/YOU/SAVED/THE/SAMPLE/DATA'
-DATADIR = '/Users/laurieshaw/Documents/Football/Data/TrackingData/Metrica/sample-data-master/data'
+DATADIR = 'Sample Data'
 
 game_id = 2 # let's look at sample match 2
 
@@ -60,6 +60,7 @@ print(goals)
 
 # plot the 3 events leading up to the second goal
 mviz.plot_events( events.loc[820:823], color='k', indicators = ['Marker','Arrow'], annotate=True )
+plt.show()
 
 # first get pitch control model parameters
 params = mpc.default_model_params()
@@ -69,12 +70,15 @@ GK_numbers = [mio.find_goalkeeper(tracking_home),mio.find_goalkeeper(tracking_aw
 # evaluated pitch control surface for first pass
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(820, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50)
 mviz.plot_pitchcontrol_for_event( 820, events,  tracking_home, tracking_away, PPCF, annotate=True )
+plt.show()
 # evaluated pitch control surface for second pass
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(821, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50)
 mviz.plot_pitchcontrol_for_event( 821, events,  tracking_home, tracking_away, PPCF, annotate=True )
+plt.show()
 # evaluated pitch control surface for third pass
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(822, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50)
 mviz.plot_pitchcontrol_for_event( 822, events,  tracking_home, tracking_away, PPCF, annotate=True )
+plt.show()
 
 """ **** calculate pass probability for every home team succesful pass **** """
 # get all home passes
@@ -94,11 +98,11 @@ for i,row in home_passes.iterrows():
 
     pass_success_probability.append( (i,Patt) )
     
-import matplotlib.pyplot as plt
 fig,ax = plt.subplots()
 ax.hist( [p[1] for p in pass_success_probability], np.arange(0,1.1,0.1))    
 ax.set_xlabel('Pass success probability')
-ax.set_ylabel('Frequency')  
+ax.set_ylabel('Frequency')
+plt.show()  
 
 # sort the passes by pitch control probability
 pass_success_probability = sorted( pass_success_probability, key = lambda x: x[1] )
@@ -108,6 +112,7 @@ risky_passes = events.loc[ [p[0] for p in pass_success_probability if p[1]<0.5 ]
 
 # plot the events
 mviz.plot_events( risky_passes, color='k', indicators = ['Marker','Arrow'], annotate=True )
+plt.show()
 
 # Print events that followed those risky passes
 print("Event following a risky (completed) pass")

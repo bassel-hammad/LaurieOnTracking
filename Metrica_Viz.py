@@ -18,6 +18,102 @@ import matplotlib.animation as animation
 import Metrica_IO as mio
 
 
+def _row_with_backfilled_velocities(team_df, frame_idx):
+    """Create a copy of team_df.loc[frame_idx] with per-player velocities
+    backfilled using neighboring frames when missing or (near-)zero.
+
+    This helps ensure moving players show velocity arrows at event frames
+    even if precomputed vx/vy are unavailable or numerically zero.
+    """
+    # Copy the target frame row so we can safely mutate velocity fields
+    row = team_df.loc[frame_idx].copy()
+    # Identify player base names from x/y columns
+    x_columns = [c for c in row.keys() if c.endswith('_x') and c != 'ball_x']
+    y_columns = [c for c in row.keys() if c.endswith('_y') and c != 'ball_y']
+
+    # Find neighbor frames for finite difference
+    # Use nearest available previous and next indices
+    try:
+        prev_idx = team_df.index[team_df.index.get_loc(frame_idx) - 1]
+    except Exception:
+        prev_idx = None
+    try:
+        next_idx = team_df.index[team_df.index.get_loc(frame_idx) + 1]
+    except Exception:
+        next_idx = None
+
+    # Time deltas
+    t0 = row.get('Time [s]', np.nan)
+    t_prev = team_df.loc[prev_idx]['Time [s]'] if prev_idx is not None else np.nan
+    t_next = team_df.loc[next_idx]['Time [s]'] if next_idx is not None else np.nan
+
+    # Helper to compute central/one-sided finite difference
+    def finite_diff(curr, prev, next_, dt_prev, dt_next):
+        if not np.isnan(prev) and not np.isnan(next_) and dt_prev > 0 and dt_next > 0:
+            # Central difference
+            return (next_ - prev) / (dt_prev + dt_next)
+        elif not np.isnan(prev) and dt_prev > 0:
+            return (curr - prev) / dt_prev
+        elif not np.isnan(next_) and dt_next > 0:
+            return (next_ - curr) / dt_next
+        return np.nan
+
+    # Threshold below which we consider velocity as effectively zero
+    tiny_speed = 1e-6
+    # Maximum realistic football velocity (m/s)
+    max_velocity = 9.0
+
+    for x_col, y_col in zip(x_columns, y_columns):
+        base = x_col[:-2]  # strip _x
+        vx_col = f'{base}_vx'
+        vy_col = f'{base}_vy'
+
+        vx = row.get(vx_col, np.nan)
+        vy = row.get(vy_col, np.nan)
+
+        needs_backfill = (
+            np.isnan(vx) or np.isnan(vy) or (abs(vx) + abs(vy) <= tiny_speed)
+        )
+        if not needs_backfill:
+            # Cap existing velocity if it's too high
+            velocity_magnitude = np.sqrt(vx**2 + vy**2)
+            if velocity_magnitude > max_velocity:
+                scale_factor = max_velocity / velocity_magnitude
+                row[vx_col] = vx * scale_factor
+                row[vy_col] = vy * scale_factor
+            continue
+
+        # Positions at frames
+        x0 = row.get(x_col, np.nan)
+        y0 = row.get(y_col, np.nan)
+        x_prev = team_df.loc[prev_idx][x_col] if prev_idx is not None else np.nan
+        y_prev = team_df.loc[prev_idx][y_col] if prev_idx is not None else np.nan
+        x_next = team_df.loc[next_idx][x_col] if next_idx is not None else np.nan
+        y_next = team_df.loc[next_idx][y_col] if next_idx is not None else np.nan
+
+        # Time deltas relative to current frame
+        dt_prev = t0 - t_prev if not np.isnan(t0) and not np.isnan(t_prev) else np.nan
+        dt_next = t_next - t0 if not np.isnan(t_next) and not np.isnan(t0) else np.nan
+
+        vx_est = finite_diff(x0, x_prev, x_next, dt_prev, dt_next)
+        vy_est = finite_diff(y0, y_prev, y_next, dt_prev, dt_next)
+
+        # Cap estimated velocity at maximum realistic speed
+        if not np.isnan(vx_est) and not np.isnan(vy_est):
+            velocity_magnitude = np.sqrt(vx_est**2 + vy_est**2)
+            if velocity_magnitude > max_velocity:
+                scale_factor = max_velocity / velocity_magnitude
+                vx_est = vx_est * scale_factor
+                vy_est = vy_est * scale_factor
+
+        if not np.isnan(vx_est):
+            row[vx_col] = vx_est
+        if not np.isnan(vy_est):
+            row[vy_col] = vy_est
+
+    return row
+
+
 def plot_pitch( field_dimen = (106.0,68.0), field_color ='green', linewidth=2, markersize=20):
     """ plot_pitch
     
@@ -138,7 +234,7 @@ def plot_frame( hometeam, awayteam, figax=None, team_colors=('r','b'), field_dim
     for team,color in zip( [hometeam,awayteam], team_colors) :
         x_columns = [c for c in team.keys() if c[-2:].lower()=='_x' and c!='ball_x'] # column header for player x positions
         y_columns = [c for c in team.keys() if c[-2:].lower()=='_y' and c!='ball_y'] # column header for player y positions
-        ax.plot( team[x_columns], team[y_columns], color+'o', MarkerSize=PlayerMarkerSize, alpha=PlayerAlpha ) # plot player positions
+        ax.plot( team[x_columns], team[y_columns], color+'o', markersize=PlayerMarkerSize, alpha=PlayerAlpha ) # plot player positions
         if include_player_velocities:
             vx_columns = ['{}_vx'.format(c[:-2]) for c in x_columns] # column header for player x positions
             vy_columns = ['{}_vy'.format(c[:-2]) for c in y_columns] # column header for player y positions
@@ -146,7 +242,7 @@ def plot_frame( hometeam, awayteam, figax=None, team_colors=('r','b'), field_dim
         if annotate:
             [ ax.text( team[x]+0.5, team[y]+0.5, x.split('_')[1], fontsize=10, color=color  ) for x,y in zip(x_columns,y_columns) if not ( np.isnan(team[x]) or np.isnan(team[y]) ) ] 
     # plot ball
-    ax.plot( hometeam['ball_x'], hometeam['ball_y'], 'ko', MarkerSize=6, alpha=1.0, LineWidth=0)
+    ax.plot( hometeam['ball_x'], hometeam['ball_y'], 'ko', markersize=6, alpha=1.0, linewidth=0)
     return fig,ax
     
 def save_match_clip(hometeam,awayteam, fpath, fname='clip_test', figax=None, frames_per_second=25, team_colors=('r','b'), field_dimen = (106.0,68.0), include_player_velocities=False, PlayerMarkerSize=10, PlayerAlpha=0.7):
@@ -196,7 +292,7 @@ def save_match_clip(hometeam,awayteam, fpath, fname='clip_test', figax=None, fra
             for team,color in zip( [hometeam.loc[i],awayteam.loc[i]], team_colors) :
                 x_columns = [c for c in team.keys() if c[-2:].lower()=='_x' and c!='ball_x'] # column header for player x positions
                 y_columns = [c for c in team.keys() if c[-2:].lower()=='_y' and c!='ball_y'] # column header for player y positions
-                objs, = ax.plot( team[x_columns], team[y_columns], color+'o', MarkerSize=PlayerMarkerSize, alpha=PlayerAlpha ) # plot player positions
+                objs = ax.plot( team[x_columns], team[y_columns], color+'o', markersize=PlayerMarkerSize, alpha=PlayerAlpha ) # plot player positions
                 figobjs.append(objs)
                 if include_player_velocities:
                     vx_columns = ['{}_vx'.format(c[:-2]) for c in x_columns] # column header for player x positions
@@ -204,7 +300,7 @@ def save_match_clip(hometeam,awayteam, fpath, fname='clip_test', figax=None, fra
                     objs = ax.quiver( team[x_columns], team[y_columns], team[vx_columns], team[vy_columns], color=color, scale_units='inches', scale=10.,width=0.0015,headlength=5,headwidth=3,alpha=PlayerAlpha)
                     figobjs.append(objs)
             # plot ball
-            objs, = ax.plot( team['ball_x'], team['ball_y'], 'ko', MarkerSize=6, alpha=1.0, LineWidth=0)
+            objs = ax.plot( team['ball_x'], team['ball_y'], 'ko', markersize=6, alpha=1.0, linewidth=0)
             figobjs.append(objs)
             # include match time at the top
             frame_minute =  int( team['Time [s]']/60. )
@@ -215,7 +311,11 @@ def save_match_clip(hometeam,awayteam, fpath, fname='clip_test', figax=None, fra
             writer.grab_frame()
             # Delete all axis objects (other than pitch lines) in preperation for next frame
             for figobj in figobjs:
-                figobj.remove()
+                if isinstance(figobj, list):
+                    for obj in figobj:
+                        obj.remove()
+                else:
+                    figobj.remove()
     print("done")
     plt.clf()
     plt.close(fig)    
@@ -249,7 +349,8 @@ def plot_events( events, figax=None, field_dimen = (106.0,68), indicators = ['Ma
         fig,ax = figax 
     for i,row in events.iterrows():
         if 'Marker' in indicators:
-            ax.plot(  row['Start X'], row['Start Y'], color+marker_style, alpha=alpha )
+            # Skip event markers to avoid ball duplication with tracking data
+            pass  # Markers disabled to prevent two-ball issue
         if 'Arrow' in indicators:
             ax.annotate("", xy=row[['End X','End Y']], xytext=row[['Start X','Start Y']], alpha=alpha, arrowprops=dict(alpha=alpha,width=0.5,headlength=4.0,headwidth=4.0,color=color),annotation_clip=False)
         if annotate:
@@ -286,9 +387,11 @@ def plot_pitchcontrol_for_event( event_id, events,  tracking_home, tracking_away
     pass_frame = events.loc[event_id]['Start Frame']
     pass_team = events.loc[event_id].Team
     
-    # plot frame and event
+    # plot frame and event (with velocity backfill to ensure arrows when missing)
     fig,ax = plot_pitch(field_color='white', field_dimen = field_dimen)
-    plot_frame( tracking_home.loc[pass_frame], tracking_away.loc[pass_frame], figax=(fig,ax), PlayerAlpha=alpha, include_player_velocities=include_player_velocities, annotate=annotate )
+    home_row = _row_with_backfilled_velocities(tracking_home, pass_frame) if include_player_velocities else tracking_home.loc[pass_frame]
+    away_row = _row_with_backfilled_velocities(tracking_away, pass_frame) if include_player_velocities else tracking_away.loc[pass_frame]
+    plot_frame( home_row, away_row, figax=(fig,ax), PlayerAlpha=alpha, include_player_velocities=include_player_velocities, annotate=annotate )
     plot_events( events.loc[event_id:event_id], figax = (fig,ax), indicators = ['Marker','Arrow'], annotate=False, color= 'k', alpha=1 )
     
     # plot pitch control surface
@@ -331,20 +434,27 @@ def plot_EPV_for_event( event_id, events, tracking_home, tracking_away, PPCF, EP
     pass_frame = events.loc[event_id]['Start Frame']
     pass_team = events.loc[event_id].Team
     
-    # plot frame and event
+    # plot frame and event (with velocity backfill to ensure arrows when missing)
     fig,ax = plot_pitch(field_color='white', field_dimen = field_dimen)
-    plot_frame( tracking_home.loc[pass_frame], tracking_away.loc[pass_frame], figax=(fig,ax), PlayerAlpha=alpha, include_player_velocities=include_player_velocities, annotate=annotate )
+    home_row = _row_with_backfilled_velocities(tracking_home, pass_frame) if include_player_velocities else tracking_home.loc[pass_frame]
+    away_row = _row_with_backfilled_velocities(tracking_away, pass_frame) if include_player_velocities else tracking_away.loc[pass_frame]
+    plot_frame( home_row, away_row, figax=(fig,ax), PlayerAlpha=alpha, include_player_velocities=include_player_velocities, annotate=annotate )
     plot_events( events.loc[event_id:event_id], figax = (fig,ax), indicators = ['Marker','Arrow'], annotate=False, color= 'k', alpha=1 )
        
     # plot pitch control surface
     if pass_team=='Home':
         cmap = 'Reds'
         lcolor = 'r'
-        EPV = np.fliplr(EPV) if mio.find_playing_direction(tracking_home,'Home') == -1 else EPV
+        attack_direction = mio.find_playing_direction(tracking_home,'Home')
     else:
         cmap = 'Blues'
         lcolor = 'b'
-        EPV = np.fliplr(EPV) if mio.find_playing_direction(tracking_away,'Away') == -1 else EPV
+        attack_direction = mio.find_playing_direction(tracking_away,'Away')
+    
+    # Use coordinate flipping instead of EPV grid flipping
+    if attack_direction == -1:
+        # Flip the PPCF grid for right->left attacks
+        PPCF = np.fliplr(PPCF)
     
     EPVxPPCF = PPCF*EPV
     
@@ -354,11 +464,19 @@ def plot_EPV_for_event( event_id, events, tracking_home, tracking_away, PPCF, EP
         vmax = autoscale
     else:
         assert False, "'autoscale' must be either {True or between 0 and 1}"
+    
+    # Adjust visualization extent based on attack direction to match flipped data
+    if attack_direction == -1:
+        # For right->left attacks, flip the extent to match flipped coordinates
+        extent = (field_dimen[0]/2., -field_dimen[0]/2., -field_dimen[1]/2., field_dimen[1]/2.)
+    else:
+        # For left->right attacks, use standard extent
+        extent = (-field_dimen[0]/2., field_dimen[0]/2., -field_dimen[1]/2., field_dimen[1]/2.)
         
-    ax.imshow(np.flipud(EPVxPPCF), extent=(-field_dimen[0]/2., field_dimen[0]/2., -field_dimen[1]/2., field_dimen[1]/2.),interpolation='spline36',vmin=0.0,vmax=vmax,cmap=cmap,alpha=0.7)
+    ax.imshow(np.flipud(EPVxPPCF), extent=extent, interpolation='spline36', vmin=0.0, vmax=vmax, cmap=cmap, alpha=0.7)
     
     if contours:
-        ax.contour( EPVxPPCF,extent=(-field_dimen[0]/2., field_dimen[0]/2., -field_dimen[1]/2., field_dimen[1]/2.),levels=np.array([0.75])*np.max(EPVxPPCF),colors=lcolor,alpha=1.0)
+        ax.contour(EPVxPPCF, extent=extent, levels=np.array([0.75])*np.max(EPVxPPCF), colors=lcolor, alpha=1.0)
     
     return fig,ax
 

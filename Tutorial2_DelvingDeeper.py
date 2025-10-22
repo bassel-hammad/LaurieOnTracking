@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 # set up initial path to data
-DATADIR = '/PATH/TO/WHERE/YOU/SAVED/THE/SAMPLE/DATA'
+DATADIR = 'Sample Data'
 game_id = 2 # let's look at sample match 2
 
 # read in the event data
@@ -41,9 +41,18 @@ events = mio.to_metric_coordinates(events)
 # reverse direction of play in the second half so that home team is always attacking from right->left
 tracking_home,tracking_away,events = mio.to_single_playing_direction(tracking_home,tracking_away,events)
 
+# Making a movie of the first goal (from Tutorial 1, event 198)
+PLOTDIR = DATADIR
+# Find the first goal frame
+first_goal_event = events.loc[198]
+first_goal_frame = int(first_goal_event['Start Frame'])
+print(f"First goal occurs at frame: {first_goal_frame}")
+
+# Generate movie for first goal (500 frames = 20 seconds)
+mviz.save_match_clip(tracking_home.iloc[first_goal_frame-250:first_goal_frame+250],tracking_away.iloc[first_goal_frame-250:first_goal_frame+250],PLOTDIR,fname='first_goal',include_player_velocities=False)
+
 # Making a movie of the second home team goal
-#PLOTDIR = DATADIR
-#mviz.save_match_clip(tracking_home.iloc[73600:73600+500],tracking_away.iloc[73600:73600+500],PLOTDIR,fname='home_goal_2',include_player_velocities=False)
+mviz.save_match_clip(tracking_home.iloc[73600:73600+500],tracking_away.iloc[73600:73600+500],PLOTDIR,fname='home_goal_2',include_player_velocities=False)
 
 # Calculate player velocities
 tracking_home = mvel.calc_player_velocities(tracking_home,smoothing=True)
@@ -56,6 +65,7 @@ tracking_away = mvel.calc_player_velocities(tracking_away,smoothing=True)
 
 # plot a random frame, plotting the player velocities using quivers
 mviz.plot_frame( tracking_home.loc[10000], tracking_away.loc[10000], include_player_velocities=True, annotate=True)
+plt.show()
 
 # Create a Physical summary dataframe for home players
 home_players = np.unique( [ c.split('_')[1] for c in tracking_home.columns if c[:4] == 'Home' ] )
@@ -84,9 +94,11 @@ plt.subplots()
 ax = home_summary['Distance [km]'].plot.bar(rot=0)
 ax.set_xlabel('Player')
 ax.set_ylabel('Distance covered [km]')
+plt.show()
 
 # plot positions at KO (to find out what position each player is playing)
 mviz.plot_frame( tracking_home.loc[51], tracking_away.loc[51], include_player_velocities=False, annotate=True)
+plt.show()
 
 # now calculate distance covered while: walking, joggings, running, sprinting
 walking = []
@@ -117,6 +129,7 @@ home_summary['Sprinting [km]'] = sprinting
 ax = home_summary[['Walking [km]','Jogging [km]','Running [km]','Sprinting [km]']].plot.bar(colormap='coolwarm')
 ax.set_xlabel('Player')
 ax.set_ylabel('Distance covered [m]')
+plt.show()
 
 # sustained sprints: how many sustained sprints per match did each player complete? Defined as maintaining a speed > 7 m/s for at least 1 second
 nsprints = []
@@ -144,5 +157,6 @@ fig,ax = mviz.plot_pitch()
 for s,e in zip(player_sprints_start,player_sprints_end):
     ax.plot(tracking_home[column_x].iloc[s],tracking_home[column_y].iloc[s],'ro')
     ax.plot(tracking_home[column_x].iloc[s:e+1],tracking_home[column_y].iloc[s:e+1],'r')
+plt.show()
     
 # END

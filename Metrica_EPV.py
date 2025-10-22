@@ -73,8 +73,9 @@ def get_EPV_at_location(position,EPV,attack_direction,field_dimen=(106.,68.)):
     if abs(x)>field_dimen[0]/2. or abs(y)>field_dimen[1]/2.:
         return 0.0 # Position is off the field, EPV is zero
     else:
+        # Flip coordinates for right->left attacks instead of flipping EPV grid
         if attack_direction==-1:
-            EPV = np.fliplr(EPV)
+            x = -x  # Flip x-coordinate for right->left attacks
         ny,nx = EPV.shape
         dx = field_dimen[0]/float(nx)
         dy = field_dimen[1]/float(ny)
@@ -111,14 +112,17 @@ def calculate_epv_added( event_id, events, tracking_home, tracking_away, GK_numb
     
     # direction of play for atacking team (so we know whether to flip the EPV grid)
     home_attack_direction = mio.find_playing_direction(tracking_home,'Home')
+    # Use backfilled velocities (consistent with pitch control generation)
+    home_row = mpc._row_with_backfilled_velocities(tracking_home, pass_frame)
+    away_row = mpc._row_with_backfilled_velocities(tracking_away, pass_frame)
     if pass_team=='Home':
         attack_direction = home_attack_direction
-        attacking_players = mpc.initialise_players(tracking_home.loc[pass_frame],'Home',params,GK_numbers[0])
-        defending_players = mpc.initialise_players(tracking_away.loc[pass_frame],'Away',params,GK_numbers[1])
+        attacking_players = mpc.initialise_players(home_row,'Home',params,GK_numbers[0])
+        defending_players = mpc.initialise_players(away_row,'Away',params,GK_numbers[1])
     elif pass_team=='Away':
         attack_direction = home_attack_direction*-1
-        defending_players = mpc.initialise_players(tracking_home.loc[pass_frame],'Home',params,GK_numbers[0])
-        attacking_players = mpc.initialise_players(tracking_away.loc[pass_frame],'Away',params,GK_numbers[1])    
+        defending_players = mpc.initialise_players(home_row,'Home',params,GK_numbers[0])
+        attacking_players = mpc.initialise_players(away_row,'Away',params,GK_numbers[1])    
     # flag any players that are offside
     attacking_players = mpc.check_offsides( attacking_players, defending_players, pass_start_pos, GK_numbers)
     # pitch control grid at pass start location

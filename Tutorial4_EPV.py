@@ -19,9 +19,10 @@ import Metrica_Viz as mviz
 import Metrica_Velocities as mvel
 import Metrica_PitchControl as mpc
 import Metrica_EPV as mepv
+import matplotlib.pyplot as plt
 
 # set up initial path to data
-DATADIR = '/PATH/TO/WHERE/YOU/SAVED/THE/SAMPLE/DATA'
+DATADIR = 'Sample Data'
 
 game_id = 2 # let's look at sample match 2
 
@@ -57,13 +58,15 @@ GK_numbers = [mio.find_goalkeeper(tracking_home),mio.find_goalkeeper(tracking_aw
 
 """ *** GET EPV SURFACE **** """
 home_attack_direction = mio.find_playing_direction(tracking_home,'Home') # 1 if shooting left-right, else -1
-EPV = mepv.load_EPV_grid(DATADIR+'/EPV_grid.csv')
+EPV = mepv.load_EPV_grid('EPV_grid.csv')
 # plot the EPV surface
 mviz.plot_EPV(EPV,field_dimen=(106.0,68),attack_direction=home_attack_direction)
+plt.show()
 
 
 # plot event leading up to first away team goal
 mviz.plot_events( events.loc[820:823], color='k', indicators = ['Marker','Arrow'], annotate=True )
+plt.show()
 
 # Calculate value-added for assist and plot expected value surface
 event_number = 822 # away team first goal
@@ -71,7 +74,9 @@ EEPV_added, EPV_diff = mepv.calculate_epv_added( event_number, events, tracking_
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(event_number, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50, offsides=True)
 fig,ax = mviz.plot_EPV_for_event( event_number, events,  tracking_home, tracking_away, PPCF, EPV, annotate=True, autoscale=True )
 fig.suptitle('Pass EPV added: %1.3f' % EEPV_added, y=0.95 )
+plt.show()
 mviz.plot_pitchcontrol_for_event( event_number, events,  tracking_home, tracking_away, PPCF, annotate=True)
+plt.show()
 
 
 """ **** calculate value-added for all passes **** """
@@ -110,14 +115,18 @@ EEPV_added, EPV_diff = mepv.calculate_epv_added( event_number, events, tracking_
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(event_number, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50, offsides=True)
 fig,ax = mviz.plot_EPV_for_event( event_number, events,  tracking_home, tracking_away, PPCF, EPV, annotate=True )
 fig.suptitle('Pass EPV added: %1.3f' % EEPV_added, y=0.95 )
+plt.show()
 mviz.plot_pitchcontrol_for_event( event_number, events,  tracking_home, tracking_away, PPCF, annotate=True )
+plt.show()
 
 event_number = 1663 # away team assisst to blocked shot
 EEPV_added, EPV_diff = mepv.calculate_epv_added( event_number, events, tracking_home, tracking_away, GK_numbers, EPV, params)
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(event_number, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50, offsides=True)
 fig,ax = mviz.plot_EPV_for_event( event_number, events,  tracking_home, tracking_away, PPCF, EPV, annotate=True )
 fig.suptitle('Pass EPV added: %1.3f' % EEPV_added, y=0.95 )
+plt.show()
 mviz.plot_pitchcontrol_for_event( event_number, events,  tracking_home, tracking_away, PPCF, annotate=True )
+plt.show()
 
 # retaining possession
 event_number = 195
@@ -125,7 +134,9 @@ EEPV_added, EPV_diff = mepv.calculate_epv_added( event_number, events, tracking_
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(event_number, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50, offsides=True)
 fig,ax = mviz.plot_EPV_for_event( event_number, events,  tracking_home, tracking_away, PPCF, EPV, annotate=True )
 fig.suptitle('Pass EPV added: %1.3f' % EEPV_added, y=0.95 )
+plt.show()
 mviz.plot_pitchcontrol_for_event( event_number, events,  tracking_home, tracking_away, PPCF, annotate=True )
+plt.show()
 
 
 '''
@@ -146,12 +157,14 @@ maximum_EPV_added = sorted(maximum_EPV_added,key = lambda x: x[1]-x[2], reverse=
 event_number = 1680
 PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(event_number, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50, offsides=True)
 fig,ax = mviz.plot_EPV_for_event( event_number, events,  tracking_home, tracking_away, PPCF, EPV, annotate=True, autoscale=True, contours=True )
+plt.show()
 
 # cross-field passes
 examples = [403,68,829]
 for event_number in examples:
     PPCF,xgrid,ygrid = mpc.generate_pitch_control_for_event(event_number, events, tracking_home, tracking_away, params, GK_numbers, field_dimen = (106.,68.,), n_grid_cells_x = 50, offsides=True)
     fig,ax = mviz.plot_EPV_for_event( event_number, events,  tracking_home, tracking_away, PPCF, EPV, annotate=True, autoscale=True, contours=True )
+    plt.show()
      
     
     
