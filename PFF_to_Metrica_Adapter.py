@@ -205,24 +205,19 @@ class PFFToMetricaAdapter:
             elif position == 'end':
                 event_type = possession.get('possessionEventType', '')
                 
-                # For passes, use the START position of the next event (where ball ended up)
-                if event_type == 'PA':
+                # For shots, use goal position
+                if event_type == 'SH':
+                    goal_coords = self.get_goal_coordinates(ball_x, ball_y)
+                    return goal_coords
+                
+                # For all other events (passes, touches, challenges, etc.), use next event start position
+                else:
                     if next_event is not None:
-                        # Get the start coordinates of the next event
+                        # Get the start coordinates of the next event (where ball ended up)
                         next_coords = self.get_event_coordinates(next_event, 'start')
                         if next_coords:
                             return next_coords
                     # Fallback to ball position if no next event
-                    normalized = self.normalize_coordinates(ball_x, ball_y)
-                    return normalized[0], normalized[1]
-                
-                # For shots, use goal position
-                elif event_type == 'SH':
-                    goal_coords = self.get_goal_coordinates(ball_x, ball_y)
-                    return goal_coords
-                
-                # For other events, use ball position
-                else:
                     normalized = self.normalize_coordinates(ball_x, ball_y)
                     return normalized[0], normalized[1]
             
@@ -239,12 +234,19 @@ class PFFToMetricaAdapter:
         try:
             # Get player ID based on type
             player_id = None
+            game_event = event.get('gameEvents', {})
+            
             if player_type == 'start':
-                player_id = (possession.get('passerPlayerId') or 
-                           possession.get('shooterPlayerId') or 
-                           possession.get('carrierPlayerId') or 
-                           possession.get('dribblerPlayerId') or 
-                           possession.get('touchPlayerId'))
+                # Always prioritize playerId from gameEvents (always populated)
+                player_id = game_event.get('playerId')
+                
+                # If not found in gameEvents, fall back to possessionEvents fields
+                if not player_id:
+                    player_id = (possession.get('passerPlayerId') or 
+                               possession.get('shooterPlayerId') or 
+                               possession.get('carrierPlayerId') or 
+                               possession.get('dribblerPlayerId') or 
+                               possession.get('touchPlayerId'))
             elif player_type == 'receiver':
                 player_id = possession.get('receiverPlayerId') or possession.get('targetPlayerId')
             
@@ -252,7 +254,7 @@ class PFFToMetricaAdapter:
                 return None
             
             # Determine if player is home or away
-            is_home_team = event.get('gameEvents', {}).get('homeTeam', False)
+            is_home_team = game_event.get('homeTeam', False)
             players_data = event.get('homePlayers' if is_home_team else 'awayPlayers', [])
             
             # Find player in tracking data

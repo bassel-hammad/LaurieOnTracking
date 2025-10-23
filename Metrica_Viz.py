@@ -347,15 +347,25 @@ def plot_events( events, figax=None, field_dimen = (106.0,68), indicators = ['Ma
         fig,ax = plot_pitch( field_dimen = field_dimen )
     else: # overlay on a previously generated pitch
         fig,ax = figax 
+    
+    # Track event number for sequential numbering
+    event_number = 1
     for i,row in events.iterrows():
         if 'Marker' in indicators:
             # Skip event markers to avoid ball duplication with tracking data
             pass  # Markers disabled to prevent two-ball issue
         if 'Arrow' in indicators:
             ax.annotate("", xy=row[['End X','End Y']], xytext=row[['Start X','Start Y']], alpha=alpha, arrowprops=dict(alpha=alpha,width=0.5,headlength=4.0,headwidth=4.0,color=color),annotation_clip=False)
+            # Add event number label near the arrow
+            mid_x = (row['Start X'] + row['End X']) / 2
+            mid_y = (row['Start Y'] + row['End Y']) / 2
+            ax.text(mid_x, mid_y, str(event_number), fontsize=9, color='black', fontweight='bold', 
+                   bbox=dict(boxstyle='circle,pad=0.3', facecolor='white', edgecolor='black', linewidth=0.5),
+                   ha='center', va='center', zorder=10)
+            event_number += 1
         if annotate:
             textstring = row['Type'] + ': ' + row['From']
-            ax.text( row['Start X'], row['Start Y'], textstring, fontsize=10, color=color)
+            ax.text( row['Start X'], row['Start Y'], textstring, fontsize=8, color='black')
     return fig,ax
 
 def plot_pitchcontrol_for_event( event_id, events,  tracking_home, tracking_away, PPCF, alpha = 0.7, include_player_velocities=True, annotate=False, field_dimen = (106.0,68)):
