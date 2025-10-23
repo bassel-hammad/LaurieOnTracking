@@ -20,6 +20,7 @@ TRACKING DATA:
 """
 
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use('TkAgg')  # Set interactive backend for Windows
 import matplotlib.pyplot as plt
@@ -198,57 +199,80 @@ tracking_away = mio.to_metric_coordinates(tracking_away)
 home_players = [c.split('_')[1] for c in tracking_home.columns if c.startswith('Home_') and c.endswith('_x')][:5]
 colors = ['red', 'blue', 'green', 'orange', 'purple']
 
-print(f">> Plotting player trajectories for first {len(home_players)} {home_team_name} players (first 15 seconds only - for realistic movement)...")
+print(f">> Plotting player trajectories for first {len(home_players)} {home_team_name} players (10 seconds to 3 minutes)...")
 fig,ax = mviz.plot_pitch()
 
-# Filter to first 15 seconds only (take first 100 frames to ensure realistic consecutive movement)
-# Using fewer frames to avoid sampling artifacts that cause unrealistic teleportation
-first_15_sec = tracking_home.iloc[:100]
-end_time = first_15_sec.iloc[-1]['Time [s]']
-print(f"   Using first 100 frames (ends around {end_time:.1f}s - short window for realistic movement)")
+# Filter to 10 seconds to 2 minutes (using actual time values)
+time_window = tracking_home[(tracking_home['Time [s]'] >= 10) & (tracking_home['Time [s]'] <= 180)]
+start_time = time_window.iloc[0]['Time [s]']
+end_time = time_window.iloc[-1]['Time [s]']
+num_frames = len(time_window)
+print(f"   Using {num_frames} frames from {start_time:.1f}s to {end_time:.1f}s (170 second window)")
 
 for i, player in enumerate(home_players):
     x_col = f'Home_{player}_x'
     y_col = f'Home_{player}_y'
-    if x_col in first_15_sec.columns and y_col in first_15_sec.columns:
+    vis_col = f'Home_{player}_visibility'
+    
+    if x_col in time_window.columns and y_col in time_window.columns:
         # Get valid positions only
-        player_data = first_15_sec[[x_col, y_col, 'Time [s]']].dropna()
+        player_data = time_window[[x_col, y_col, vis_col, 'Time [s]']].copy() if vis_col in time_window.columns else time_window[[x_col, y_col, 'Time [s]']].copy()
+        
+        # NO VISIBILITY FILTERING - include all positions (VISIBLE and ESTIMATED)
+        # if vis_col in time_window.columns:
+        #     player_data = player_data[player_data[vis_col] == 'VISIBLE']
+        
+        # Drop NaN positions
+        player_data = player_data.dropna(subset=[x_col, y_col])
         
         if len(player_data) > 1:
-            # Filter out unrealistic movements and estimated positions
+            # Calculate time gaps between consecutive VISIBLE frames
+            time_diff = player_data['Time [s]'].diff()
+            
+            # Calculate position changes
             x_diff = player_data[x_col].diff().abs()
             y_diff = player_data[y_col].diff().abs()
+            distance = (x_diff**2 + y_diff**2)**0.5
             
-            # Remove large jumps (even stricter for 15-second window)
-            realistic_movement = (x_diff <= 3.0) & (y_diff <= 3.0)
+            # Find where to break the trajectory line:
+            # - Large time gap (>2 seconds between VISIBLE frames = player was off-camera)
+            # - Large distance jump (>10m between consecutive VISIBLE frames = tracking error)
+            breaks = (time_diff > 2.0) | (distance > 10.0)
+            breaks.iloc[0] = True  # Start of first segment
             
-            # Remove positions that don't change for many frames (likely off-screen estimates)
-            position_changes = (x_diff > 0.001) | (y_diff > 0.001)
+            # Split into continuous segments
+            segment_ids = breaks.cumsum()
             
-            # Combine filters
-            good_data = realistic_movement & position_changes
-            good_data.iloc[0] = True  # Keep first point
+            total_points = 0
+            segments_plotted = 0
             
-            clean_data = player_data[good_data]
+            for segment_id in segment_ids.unique():
+                segment = player_data[segment_ids == segment_id]
+                
+                # Only plot segments with at least 3 points
+                if len(segment) >= 3:
+                    label = f'HOME {player}' if segments_plotted == 0 else None
+                    ax.plot(segment[x_col], segment[y_col], color=colors[i], 
+                           alpha=0.8, linewidth=1.5, label=label)
+                    total_points += len(segment)
+                    segments_plotted += 1
             
-            if len(clean_data) > 5:  # Only plot if we have enough clean data
-                ax.plot(clean_data[x_col], clean_data[y_col], color=colors[i], 
-                       alpha=0.8, linewidth=1.5, label=f'HOME {player}')
-                print(f"   Player {player}: {len(clean_data)}/{len(player_data)} clean positions")
+            if segments_plotted > 0:
+                print(f"   Player {player}: {total_points}/{len(player_data)} positions ({segments_plotted} continuous segments)")
 
 ax.legend(loc='upper right', fontsize=8)
-plt.title(f"PFF - Player Movement Paths ({home_team_name}, First 60 Seconds)")
+plt.title(f"PFF - Player Movement Paths ({home_team_name}, 10s to 2min - ALL positions)")
 plt.show()
 
 # Plot player positions at kickoff (first event frame)
 print(">> Plotting positions at kickoff...")
-# Try to find kickoff frame - use first frame of tracking data if Start Frame not available
-if 'Start Frame' in events.columns:
-    KO_Frame = events.loc[0]['Start Frame']
-    print(f"   Using event Start Frame: {KO_Frame}")
+# Use the properly mapped Start Frame from first event
+if 'Start Frame' in events.columns and pd.notna(events.loc[0, 'Start Frame']):
+    KO_Frame = int(events.loc[0]['Start Frame'])
+    print(f"   Using mapped event frame: {KO_Frame}")
 else:
-    KO_Frame = tracking_home.index[0]  # Use first available frame
-    print(f"   Using first tracking frame: {KO_Frame}")
+    KO_Frame = tracking_home.index[0]  # Use first available frame as fallback
+    print(f"   Start Frame not mapped, using first tracking frame: {KO_Frame}")
 
 if KO_Frame in tracking_home.index and KO_Frame in tracking_away.index:
     fig,ax = mviz.plot_frame(tracking_home.loc[KO_Frame], tracking_away.loc[KO_Frame])
@@ -265,24 +289,28 @@ if len(goals) >= 1:
     first_goal = goals.iloc[0]  # First goal
     print(f"   First goal: {first_goal['From']} at {first_goal['Start Time [s]']:.1f}s")
     
-    # Try to find the closest frame to the goal time
-    goal_time = first_goal['Start Time [s]']
-    time_diffs = abs(tracking_home['Time [s]'] - goal_time)
-    closest_frame = time_diffs.idxmin()
-    closest_time = tracking_home.loc[closest_frame, 'Time [s]']
+    # Use the properly mapped Start Frame from event data (mapped via game_event_id)
+    goal_frame = first_goal['Start Frame']
     
-    print(f"   Closest frame: {closest_frame} at {closest_time:.1f}s (diff: {abs(goal_time - closest_time):.1f}s)")
-    
-    if closest_frame in tracking_home.index and closest_frame in tracking_away.index:
-        # First plot the goal event
-        fig,ax = mviz.plot_events(events.loc[goals.index[0]:goals.index[0]], indicators=['Marker','Arrow'], annotate=True)
-        # Then overlay player positions
-        fig,ax = mviz.plot_frame(tracking_home.loc[closest_frame], tracking_away.loc[closest_frame], figax=(fig,ax))
-        plt.title(f"PFF - Positions at First Goal ({first_goal['From']}) - Frame {closest_frame}")
-        plt.show()
-        print("   First goal plot displayed successfully!")
+    if pd.notna(goal_frame):
+        goal_frame = int(goal_frame)
+        print(f"   Using mapped frame: {goal_frame}")
+        
+        if goal_frame in tracking_home.index and goal_frame in tracking_away.index:
+            tracking_time = tracking_home.loc[goal_frame, 'Time [s]']
+            print(f"   Tracking time at frame: {tracking_time:.1f}s")
+            
+            # First plot the goal event
+            fig,ax = mviz.plot_events(events.loc[goals.index[0]:goals.index[0]], indicators=['Marker','Arrow'], annotate=True)
+            # Then overlay player positions
+            fig,ax = mviz.plot_frame(tracking_home.loc[goal_frame], tracking_away.loc[goal_frame], figax=(fig,ax))
+            plt.title(f"PFF - Positions at First Goal ({first_goal['From']}) - Frame {goal_frame}")
+            plt.show()
+            print("   First goal plot displayed successfully!")
+        else:
+            print(f"   Goal frame {goal_frame} not available in tracking data")
     else:
-        print(f"   Goal frame {closest_frame} not available in tracking data")
+        print(f"   Goal event not mapped to tracking frame (Start Frame is NULL)")
 else:
     print(">> No goals found, skipping goal analysis")
 

@@ -59,9 +59,9 @@ def tracking_data(DATADIR,game_id,teamname):
     # Build dynamic column names based on actual number of players
     columns = ['Period', 'Frame', 'Time [s]']  # First 3 columns
     
-    # Add player columns (x, y pairs) - flexible for any number of players
+    # Add player columns (x, y, visibility triplets) - flexible for any number of players
     for jersey in jerseys:
-        columns.extend([f"{teamname}_{jersey}_x", f"{teamname}_{jersey}_y"])
+        columns.extend([f"{teamname}_{jersey}_x", f"{teamname}_{jersey}_y", f"{teamname}_{jersey}_visibility"])
     
     # Add ball columns
     columns.extend(["ball_x", "ball_y"])
@@ -88,7 +88,7 @@ def to_metric_coordinates(data,field_dimen=(106.,68.) ):
     Convert positions from Metrica units to meters (with origin at centre circle)
     '''
     x_columns = [c for c in data.columns if c[-1].lower()=='x']
-    y_columns = [c for c in data.columns if c[-1].lower()=='y']
+    y_columns = [c for c in data.columns if c[-1].lower()=='y' and 'visibility' not in c.lower()]
     data[x_columns] = ( data[x_columns]-0.5 ) * field_dimen[0]
     data[y_columns] = -1 * ( data[y_columns]-0.5 ) * field_dimen[1]
     ''' 

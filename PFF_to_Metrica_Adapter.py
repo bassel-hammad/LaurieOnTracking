@@ -515,11 +515,13 @@ class PFFToMetricaAdapter:
             # Always use original coordinates regardless of visibility
             x_meters = player.get('x', np.nan)
             y_meters = player.get('y', np.nan)
+            visibility = player.get('visibility', 'UNKNOWN')  # Get visibility status
             
             x_norm, y_norm = self.normalize_coordinates(x_meters, y_meters)
             
             frame_info[f'Home_{jersey}_x'] = x_norm
             frame_info[f'Home_{jersey}_y'] = y_norm
+            frame_info[f'Home_{jersey}_visibility'] = visibility  # Store visibility
         
         # Process away team players (France) - RAW COORDINATES ONLY
         away_players_original = frame_data.get('awayPlayers', [])
@@ -530,11 +532,13 @@ class PFFToMetricaAdapter:
             # Always use original coordinates regardless of visibility
             x_meters = player.get('x', np.nan)
             y_meters = player.get('y', np.nan)
+            visibility = player.get('visibility', 'UNKNOWN')  # Get visibility status
             
             x_norm, y_norm = self.normalize_coordinates(x_meters, y_meters)
             
             frame_info[f'Away_{jersey}_x'] = x_norm
             frame_info[f'Away_{jersey}_y'] = y_norm
+            frame_info[f'Away_{jersey}_visibility'] = visibility  # Store visibility
         
         # Process ball - RAW COORDINATES ONLY
         balls_original = frame_data.get('balls', [])
@@ -600,17 +604,29 @@ class PFFToMetricaAdapter:
             home_players = frame_data.get('homePlayers', [])
             for i, player in enumerate(home_players):
                 player_id = player.get('playerId', i)
+                visibility = player.get('visibility', 'UNKNOWN')
+                
+                # Store coordinates
                 processed_frame[f'Home_{player_id}_x'] = player.get('x', 0.0)
                 processed_frame[f'Home_{player_id}_y'] = player.get('y', 0.0)
                 processed_frame[f'Home_{player_id}_speed'] = player.get('speed', 0.0)
+                
+                # Store visibility - VISIBLE is high quality, ESTIMATED is low quality
+                processed_frame[f'Home_{player_id}_visibility'] = visibility
             
             # Process away players
             away_players = frame_data.get('awayPlayers', [])
             for i, player in enumerate(away_players):
                 player_id = player.get('playerId', i)
+                visibility = player.get('visibility', 'UNKNOWN')
+                
+                # Store coordinates
                 processed_frame[f'Away_{player_id}_x'] = player.get('x', 0.0)
                 processed_frame[f'Away_{player_id}_y'] = player.get('y', 0.0)
                 processed_frame[f'Away_{player_id}_speed'] = player.get('speed', 0.0)
+                
+                # Store visibility
+                processed_frame[f'Away_{player_id}_visibility'] = visibility
             
             # Process ball
             ball_data = frame_data.get('balls', [])
@@ -821,19 +837,19 @@ class PFFToMetricaAdapter:
         # Row 1: Team names
         row1 = ['', '', '']  # Period, Frame, Time
         for jersey in jersey_numbers:
-            row1.extend([team_name, ''])  # Team name for x and y
+            row1.extend([team_name, '', ''])  # Team name for x, y, and visibility
         row1.extend(['', ''])  # Ball x and y
         
         # Row 2: Jersey numbers  
         row2 = ['', '', '']  # Period, Frame, Time
         for jersey in jersey_numbers:
-            row2.extend([jersey, ''])  # Jersey number for x and y
+            row2.extend([jersey, '', ''])  # Jersey number for x, y, and visibility
         row2.extend(['', ''])  # Ball x and y
         
         # Row 3: Column headers
         row3 = ['Period', 'Frame', 'Time [s]']
         for jersey in jersey_numbers:
-            row3.extend([f'Player{jersey}', ''])  # PlayerX for x and y
+            row3.extend([f'Player{jersey}', '', 'visibility'])  # PlayerX for x, y, and visibility
         row3.extend(['Ball', ''])  # Ball for x and y
         
         # Prepare data rows
@@ -841,11 +857,16 @@ class PFFToMetricaAdapter:
         for frame_idx, row in tracking_df.iterrows():
             data_row = [row['Period'], frame_idx, row['Time [s]']]
             
-            # Add player positions (x, y alternating)
+            # Add player positions (x, y, visibility alternating)
             for jersey in jersey_numbers:
                 x_col = f'{team_name}_{jersey}_x'
                 y_col = f'{team_name}_{jersey}_y'
-                data_row.extend([row.get(x_col, np.nan), row.get(y_col, np.nan)])
+                vis_col = f'{team_name}_{jersey}_visibility'
+                data_row.extend([
+                    row.get(x_col, np.nan), 
+                    row.get(y_col, np.nan),
+                    row.get(vis_col, 'UNKNOWN')
+                ])
             
             # Add ball position
             data_row.extend([row.get('ball_x', np.nan), row.get('ball_y', np.nan)])
