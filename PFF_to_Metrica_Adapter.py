@@ -95,41 +95,69 @@ class PFFToMetricaAdapter:
             if not outcome or pd.isna(outcome):
                 return ''
             
-            # Map PFF outcome codes to Metrica subtypes
-            outcome_mapping = {
-                # Pass outcomes
-                'C': '',  # Complete - no subtype needed
-                'D': 'GROUND-LOST',  # Defensive Interception
-                'O': 'OUT',  # Out of Play
-                'B': 'BLOCKED',  # Blocked
-                'I': 'OFF TARGET',  # Inadvertent Shot at Goal
-                'G': 'ON TARGET-GOAL',  # Inadvertent Shot at Own Goal
-                'S': 'STOPPAGE',  # Stoppage
-                
-                # Shot outcomes
-                'G': 'ON TARGET-GOAL',  # Goal
-                'S': 'ON TARGET-SAVED',  # Save on target
-                'F': 'OFF TARGET',  # Save off target
-                'O': 'OFF TARGET',  # Off target
-                'B': 'BLOCKED',  # Block on target
-                'C': 'BLOCKED',  # Block off target
-                'L': 'BLOCKED',  # Goalline clearance
-                
-                # Challenge outcomes
-                'D': 'GROUND-WON',  # Dribble won
-                'F': 'GROUND-LOST',  # Foul
-                
-                # Clearance outcomes
-                'P': 'GROUND-WON',  # Successful clearance
-                
-                # Rebound outcomes
-                'P': 'GROUND-WON',  # Successful rebound
-                
-                # Touch outcomes
-                'O': 'OUT',  # Out of play
-            }
+            # CONTEXT-AWARE MAPPING: Different mappings for each event type
+            # This prevents key collisions (e.g., 'C' means different things for passes vs shots)
             
-            return outcome_mapping.get(outcome, '')
+            if event_type == 'PA':  # Pass outcomes
+                pass_mapping = {
+                    'C': '',                  # Complete
+                    'D': 'GROUND-LOST',       # Defensive Interception
+                    'O': 'OUT',               # Out of Play
+                    'B': 'BLOCKED',           # Blocked
+                    'I': 'OFF TARGET',        # Inadvertent Shot at Goal
+                    'G': 'ON TARGET-GOAL',    # Inadvertent Own Goal
+                    'S': 'STOPPAGE',          # Stoppage
+                }
+                return pass_mapping.get(outcome, '')
+                
+            elif event_type == 'SH':  # Shot outcomes
+                shot_mapping = {
+                    'G': 'ON TARGET-GOAL',      # Goal
+                    'S': 'ON TARGET-SAVED',     # Save on target
+                    'F': 'OFF TARGET-SAVED',    # Save off target (goalkeeper touched)
+                    'O': 'OFF TARGET',          # Off target (no save)
+                    'B': 'BLOCKED-ON TARGET',   # Block on target
+                    'C': 'BLOCKED-OFF TARGET',  # Block off target
+                    'L': 'BLOCKED-GOALLINE',    # Goalline clearance
+                }
+                return shot_mapping.get(outcome, '')
+                
+            elif event_type == 'CR':  # Cross outcomes
+                cross_mapping = {
+                    'C': 'PASS-CROSS',       # Complete cross
+                    'D': 'GROUND-LOST',      # Intercepted
+                    'O': 'OUT',              # Out of play
+                    'B': 'BLOCKED',          # Blocked
+                }
+                return cross_mapping.get(outcome, '')
+                
+            elif event_type == 'CH':  # Challenge outcomes
+                challenge_mapping = {
+                    'D': 'GROUND-WON',       # Dribble won
+                    'F': 'GROUND-LOST',      # Foul
+                }
+                return challenge_mapping.get(outcome, '')
+                
+            elif event_type == 'CL':  # Clearance outcomes
+                clearance_mapping = {
+                    'P': 'GROUND-WON',       # Successful clearance
+                }
+                return clearance_mapping.get(outcome, '')
+                
+            elif event_type == 'RE':  # Rebound outcomes
+                rebound_mapping = {
+                    'P': 'GROUND-WON',       # Successful rebound
+                }
+                return rebound_mapping.get(outcome, '')
+                
+            elif event_type == 'TC':  # Touch outcomes
+                touch_mapping = {
+                    'O': 'OUT',              # Out of play
+                }
+                return touch_mapping.get(outcome, '')
+            
+            # Default fallback for unknown event types
+            return ''
             
         except Exception as e:
             return ''
@@ -150,7 +178,7 @@ class PFFToMetricaAdapter:
         }
         return mapping.get(possession_type, '')
 
-    def get_event_coordinates(self, event, position='start'):
+    def get_event_coordinates(self, event, position='start', next_event=None):
         """Extract coordinates from event tracking data with improved logic"""
         try:
             possession = event.get('possessionEvents', {})
@@ -177,24 +205,24 @@ class PFFToMetricaAdapter:
             elif position == 'end':
                 event_type = possession.get('possessionEventType', '')
                 
-                # For passes, try to get receiver position
+                # For passes, use the START position of the next event (where ball ended up)
                 if event_type == 'PA':
-                    receiver_coords = self.get_player_coordinates(event, possession, 'receiver')
-                    if receiver_coords:
-                        return receiver_coords
+                    if next_event is not None:
+                        # Get the start coordinates of the next event
+                        next_coords = self.get_event_coordinates(next_event, 'start')
+                        if next_coords:
+                            return next_coords
+                    # Fallback to ball position if no next event
+                    normalized = self.normalize_coordinates(ball_x, ball_y)
+                    return normalized[0], normalized[1]
                 
                 # For shots, use goal position
                 elif event_type == 'SH':
                     goal_coords = self.get_goal_coordinates(ball_x, ball_y)
                     return goal_coords
                 
-                # For other events, use ball position or next event position
+                # For other events, use ball position
                 else:
-                    # Try to get next event position if available
-                    next_coords = self.get_next_event_coordinates(event)
-                    if next_coords:
-                        return next_coords
-                    # Fallback to ball position
                     normalized = self.normalize_coordinates(ball_x, ball_y)
                     return normalized[0], normalized[1]
             
@@ -365,9 +393,21 @@ class PFFToMetricaAdapter:
                         possession.get('targetPlayerName') or 
                         'Unknown Player')
             
+            # Get next event for pass end position (look ahead in the pff_data list)
+            next_event = None
+            for j in range(i + 1, len(pff_data)):
+                next_candidate = pff_data[j]
+                if 'possessionEvents' in next_candidate and 'gameEvents' in next_candidate:
+                    next_poss = next_candidate['possessionEvents']
+                    next_game = next_candidate['gameEvents']
+                    # Use next event only if it's not a non-event and is in same period
+                    if not next_poss.get('nonEvent', False) and next_game.get('period', 1) == period:
+                        next_event = next_candidate
+                        break
+            
             # Get coordinates from tracking data if available
-            start_x, start_y = self.get_event_coordinates(event, 'start')
-            end_x, end_y = self.get_event_coordinates(event, 'end')
+            start_x, start_y = self.get_event_coordinates(event, 'start', next_event)
+            end_x, end_y = self.get_event_coordinates(event, 'end', next_event)
             
             # Create event record
             event_record = {
