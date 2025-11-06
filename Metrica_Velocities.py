@@ -35,8 +35,8 @@ def calc_player_velocities(team, smoothing=True, filter_='Savitzky-Golay', windo
     # remove any velocity data already in the dataframe
     team = remove_player_velocities(team)
     
-    # Get the player ids
-    player_ids = np.unique( [ c[:-2] for c in team.columns if c[:4] in ['Home','Away'] ] )
+    # Get the player ids (only from _x columns to avoid visibility columns)
+    player_ids = np.unique( [ c[:-2] for c in team.columns if c[:4] in ['Home','Away'] and c.endswith('_x') ] )
 
     # Calculate the timestep from one frame to the next. Should always be 0.04 within the same half
     dt = team['Time [s]'].diff()

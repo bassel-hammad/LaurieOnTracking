@@ -232,13 +232,17 @@ def plot_frame( hometeam, awayteam, figax=None, team_colors=('r','b'), field_dim
         fig,ax = figax # unpack tuple
     # plot home & away teams in order
     for team,color in zip( [hometeam,awayteam], team_colors) :
-        x_columns = [c for c in team.keys() if c[-2:].lower()=='_x' and c!='ball_x'] # column header for player x positions
-        y_columns = [c for c in team.keys() if c[-2:].lower()=='_y' and c!='ball_y'] # column header for player y positions
+        x_columns = [c for c in team.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()] # column header for player x positions
+        y_columns = [c for c in team.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()] # column header for player y positions
         ax.plot( team[x_columns], team[y_columns], color+'o', markersize=PlayerMarkerSize, alpha=PlayerAlpha ) # plot player positions
         if include_player_velocities:
             vx_columns = ['{}_vx'.format(c[:-2]) for c in x_columns] # column header for player x positions
             vy_columns = ['{}_vy'.format(c[:-2]) for c in y_columns] # column header for player y positions
-            ax.quiver( team[x_columns], team[y_columns], team[vx_columns], team[vy_columns], color=color, scale_units='inches', scale=10.,width=0.0015,headlength=5,headwidth=3,alpha=PlayerAlpha)
+            # Convert to numeric to avoid dtype issues with visibility columns
+            import pandas as pd
+            vx_values = pd.to_numeric(team[vx_columns], errors='coerce')
+            vy_values = pd.to_numeric(team[vy_columns], errors='coerce')
+            ax.quiver( team[x_columns], team[y_columns], vx_values, vy_values, color=color, scale_units='inches', scale=10.,width=0.0015,headlength=5,headwidth=3,alpha=PlayerAlpha)
         if annotate:
             [ ax.text( team[x]+0.5, team[y]+0.5, x.split('_')[1], fontsize=10, color=color  ) for x,y in zip(x_columns,y_columns) if not ( np.isnan(team[x]) or np.isnan(team[y]) ) ] 
     # plot ball

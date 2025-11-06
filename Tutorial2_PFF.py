@@ -76,7 +76,8 @@ for i, (goal_idx, goal) in enumerate(goals.iterrows(), 1):
     team = "[HOME]" if goal['Team'] == 'Home' else "[AWAY]"
     team_name = home_team_name if goal['Team'] == 'Home' else away_team_name
     player_name = goal.get('From', 'Unknown')
-    minute = goal.get('Period', 0) * 45 + goal.get('Start Time [s]', 0) / 60
+    # Convert tracking time to game minutes (tracking time is cumulative across periods)
+    minute = goal.get('Start Time [s]', 0) / 60
     print(f"   Goal {i}: {team} {team_name} - {player_name} - {minute:.1f}'")
 
 # Generate video for second goal (if available)
@@ -92,16 +93,48 @@ if len(goals) >= 2:
     print(f"   Player: {player_name}")
     
     try:
-        # Check if frame is available
-        if goal_frame >= 250 and goal_frame + 250 < len(tracking_home):
+        # Check if frame is available in tracking data (use actual frame numbers, not indices)
+        if goal_frame in tracking_home.index:
             print("   Generating 20-second video around second goal...")
             
-            # Extract frames around the goal (500 frames = 20 seconds at 25fps)
-            start_frame = goal_frame - 250
-            end_frame = goal_frame + 250
+            # Get goal time and create 20-second time window
+            goal_time = tracking_home.loc[goal_frame, 'Time [s]']
+            start_time = goal_time - 10  # 10 seconds before
+            end_time = goal_time + 10    # 10 seconds after
             
-            home_clip = tracking_home.iloc[start_frame:end_frame]
-            away_clip = tracking_away.iloc[start_frame:end_frame]
+            print(f"   Time window: {start_time:.1f}s to {end_time:.1f}s (centered on goal at {goal_time:.1f}s)")
+            
+            # Get all frames in this time window
+            home_window = tracking_home[(tracking_home['Time [s]'] >= start_time) & 
+                                        (tracking_home['Time [s]'] <= end_time)].copy()
+            away_window = tracking_away[(tracking_away['Time [s]'] >= start_time) & 
+                                        (tracking_away['Time [s]'] <= end_time)].copy()
+            
+            print(f"   Found {len(home_window)} frames in time window (variable spacing)")
+            
+            # Resample to uniform 25 FPS for smooth video
+            target_fps = 25
+            uniform_times = np.linspace(start_time, end_time, int((end_time - start_time) * target_fps))
+            
+            # Interpolate positions to uniform time points
+            home_clip = pd.DataFrame(index=range(len(uniform_times)))
+            away_clip = pd.DataFrame(index=range(len(uniform_times)))
+            
+            home_clip['Time [s]'] = uniform_times
+            away_clip['Time [s]'] = uniform_times
+            home_clip['Period'] = home_window['Period'].iloc[0]
+            away_clip['Period'] = away_window['Period'].iloc[0]
+            
+            # Interpolate player positions
+            for col in home_window.columns:
+                if col.endswith('_x') or col.endswith('_y') or col == 'ball_x' or col == 'ball_y':
+                    home_clip[col] = np.interp(uniform_times, home_window['Time [s]'], home_window[col])
+            
+            for col in away_window.columns:
+                if col.endswith('_x') or col.endswith('_y') or col == 'ball_x' or col == 'ball_y':
+                    away_clip[col] = np.interp(uniform_times, away_window['Time [s]'], away_window[col])
+            
+            print(f"   Resampled to {len(home_clip)} frames at uniform {target_fps} FPS for smooth playback")
             
             # Fixed video generation (handles matplotlib plotting issues)
             try:
@@ -122,6 +155,7 @@ if len(goals) >= 2:
                     print("   ❌ Video file not created")
         else:
             print(f"   ❌ Goal frame {goal_frame} not available in tracking data")
+            print(f"   Available frame range: {tracking_home.index.min()} to {tracking_home.index.max()}")
     except Exception as e:
         print(f"   ❌ Video generation failed: {e}")
 else:

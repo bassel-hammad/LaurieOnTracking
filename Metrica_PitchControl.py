@@ -117,9 +117,9 @@ def _row_with_backfilled_velocities(team_df, frame_idx):
 
     return row
 
-def initialise_players(team,teamname,params,GKid):
+def initialise_players(team,teamname,params,GKid,is_attacking=True):
     """
-    initialise_players(team,teamname,params)
+    initialise_players(team,teamname,params,GKid,is_attacking)
     
     create a list of player objects that holds their positions and velocities from the tracking data dataframe 
     
@@ -129,6 +129,8 @@ def initialise_players(team,teamname,params,GKid):
     team: row (i.e. instant) of either the home or away team tracking Dataframe
     teamname: team name "Home" or "Away"
     params: Dictionary of model parameters (default model parameters can be generated using default_model_params() )
+    GKid: goalkeeper id
+    is_attacking: Boolean, True if this team is attacking (in possession), False if defending
         
     Returns
     -----------
@@ -136,13 +138,13 @@ def initialise_players(team,teamname,params,GKid):
     team_players: list of player objects for the team at at given instant
     
     """    
-    # get player  ids
-    player_ids = np.unique( [ c.split('_')[1] for c in team.keys() if c[:4] == teamname ] )
+    # get player  ids (only from _x columns to avoid visibility columns)
+    player_ids = np.unique( [ c.split('_')[1] for c in team.keys() if c[:4] == teamname and c.endswith('_x') ] )
     # create list
     team_players = []
     for p in player_ids:
         # create a player object for player_id 'p'
-        team_player = player(p,team,teamname,params,GKid)
+        team_player = player(p,team,teamname,params,GKid,is_attacking)
         if team_player.inframe:
             team_players.append(team_player)
     return team_players
@@ -208,13 +210,14 @@ class player(object):
     
     """
     # player object holds position, velocity, time-to-intercept and pitch control contributions for each player
-    def __init__(self,pid,team,teamname,params,GKid):
+    def __init__(self,pid,team,teamname,params,GKid,is_attacking=True):
         self.id = pid
         self.is_gk = self.id == GKid
         self.teamname = teamname
         self.playername = "%s_%s_" % (teamname,pid)
         self.vmax = params['max_player_speed'] # player max speed in m/s. Could be individualised
-        self.reaction_time = params['reaction_time'] # player reaction time in 's'. Could be individualised
+        # Use different reaction times for attacking vs defending players
+        self.reaction_time = params['reaction_time'] if is_attacking else params['reaction_time_def']
         self.tti_sigma = params['tti_sigma'] # standard deviation of sigmoid function (see Eq 4 in Spearman, 2018)
         self.lambda_att = params['lambda_att'] # standard deviation of sigmoid function (see Eq 4 in Spearman, 2018)
         self.lambda_def = params['lambda_gk'] if self.is_gk else params['lambda_def'] # factor of 3 ensures that anything near the GK is likely to be claimed by the GK
@@ -267,13 +270,14 @@ def default_model_params(time_to_control_veto=3):
     params = {}
     # model parameters
     params['max_player_accel'] = 7. # maximum player acceleration m/s/s, not used in this implementation
-    params['max_player_speed'] = 5. # maximum player speed m/s
-    params['reaction_time'] = 0.7 # seconds, time taken for player to react and change trajectory. Roughly determined as vmax/amax
+    params['max_player_speed'] = 8. # maximum player speed m/s (~36 km/h, elite World Cup players like Mbappé)
+    params['reaction_time'] = 0.7 # seconds, time taken for attacking players to react and change trajectory
+    params['reaction_time_def'] = 1.0 # seconds, time taken for defending players to react (slower than attackers)
     params['tti_sigma'] = 0.45 # Standard deviation of sigmoid function in Spearman 2018 ('s') that determines uncertainty in player arrival time
-    params['kappa_def'] =  1. # kappa parameter in Spearman 2018 (=1.72 in the paper) that gives the advantage defending players to control ball, I have set to 1 so that home & away players have same ball control probability
+    params['kappa_def'] =  1.0 # kappa parameter in Spearman 2018 (=1.72 in the paper) that gives the advantage defending players to control ball, set to <1 to give attackers advantage
     params['lambda_att'] = 4.3 # ball control parameter for attacking team
-    params['lambda_def'] = 4.3 * params['kappa_def'] # ball control parameter for defending team
-    params['lambda_gk'] = params['lambda_def']*3.0 # make goal keepers must quicker to control ball (because they can catch it)
+    params['lambda_def'] = 4.3 * params['kappa_def'] # ball control parameter for defending team (= 3.01 with kappa_def=0.7)
+    params['lambda_gk'] = params['lambda_def']*1.5 # goalkeeper ball control rate (1.5× defender, minimal GK advantage)
     params['average_ball_speed'] = 15. # average ball travel speed in m/s
     # numerical parameters for model evaluation
     params['int_dt'] = 0.04 # integration timestep (dt)
@@ -331,11 +335,11 @@ def generate_pitch_control_for_event(event_id, events, tracking_home, tracking_a
     home_row = _row_with_backfilled_velocities(tracking_home, pass_frame)
     away_row = _row_with_backfilled_velocities(tracking_away, pass_frame)
     if pass_team=='Home':
-        attacking_players = initialise_players(home_row,'Home',params,GK_numbers[0])
-        defending_players = initialise_players(away_row,'Away',params,GK_numbers[1])
+        attacking_players = initialise_players(home_row,'Home',params,GK_numbers[0],is_attacking=True)
+        defending_players = initialise_players(away_row,'Away',params,GK_numbers[1],is_attacking=False)
     elif pass_team=='Away':
-        defending_players = initialise_players(home_row,'Home',params,GK_numbers[0])
-        attacking_players = initialise_players(away_row,'Away',params,GK_numbers[1])
+        defending_players = initialise_players(home_row,'Home',params,GK_numbers[0],is_attacking=False)
+        attacking_players = initialise_players(away_row,'Away',params,GK_numbers[1],is_attacking=True)
     else:
         assert False, "Team in possession must be either home or away"
         
