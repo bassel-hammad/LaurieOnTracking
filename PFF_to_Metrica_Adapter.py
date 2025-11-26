@@ -423,6 +423,7 @@ class PFFToMetricaAdapter:
                 'End Frame': None,   # Will be filled later
                 'From': from_player,
                 'To': to_player,
+                'Sequence': event.get('sequence', None),  # Sequence number from PFF data
                 'PFF Event ID': event.get('gameEventId', i),
                 'Start X': start_x,
                 'Start Y': start_y,
@@ -441,7 +442,7 @@ class PFFToMetricaAdapter:
         # Reorder columns to match Metrica format
         column_order = [
             'Team', 'Type', 'Subtype', 'Period', 'Start Frame', 'Start Time [s]',
-            'End Frame', 'End Time [s]', 'From', 'To', 'Start X', 'Start Y', 'End X', 'End Y', 'PFF Event ID'
+            'End Frame', 'End Time [s]', 'From', 'To', 'Start X', 'Start Y', 'End X', 'End Y', 'PFF Event ID', 'Sequence'
         ]
         metrica_events = metrica_events[column_order]
         

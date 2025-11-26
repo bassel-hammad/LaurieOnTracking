@@ -22,12 +22,13 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import Metrica_IO as mio
-import Metrica_Viz as mviz
 import Metrica_Velocities as mvel
 import Metrica_PitchControl as mpc
+import Metrica_Viz as mviz
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 print("=" * 70)
 print("PLAYER INFLUENCE ANALYSIS")
@@ -39,13 +40,22 @@ print()
 # CONFIGURATION
 # =============================================================================
 DATADIR = 'Sample Data'
-game_id = 10517
 OUTPUT_DIR = 'Metrica_Output'
 
-# Time window configuration
-TIME_WINDOW_BEFORE_GOAL = 10
-TIME_WINDOW_AFTER_GOAL = 2
-TARGET_FPS = 5
+# Get match ID from user
+game_id = input("Enter match ID (e.g., 10517): ").strip()
+if not game_id:
+    print("ERROR: Match ID is required!")
+    sys.exit(1)
+
+try:
+    game_id = int(game_id)
+except ValueError:
+    print("ERROR: Match ID must be a number!")
+    sys.exit(1)
+
+print(f"\nSelected match ID: {game_id}")
+print()
 
 print("Loading data...")
 events = mio.read_event_data(DATADIR, game_id)
@@ -65,27 +75,50 @@ print("Calculating player velocities...")
 tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
 tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
 
-# Find Di María's goal
-shots = events[events['Type']=='SHOT']
-goals = shots[shots['Subtype'].str.contains('GOAL', na=False)].copy()
+# Get sequence number from user
+available_sequences = events['Sequence'].dropna().unique()
+available_sequences = sorted([int(s) for s in available_sequences if not pd.isna(s)])
+print(f"\nAvailable sequences: {available_sequences}")
+sequence_input = input("Enter sequence number (e.g., 1): ").strip()
 
-if len(goals) < 2:
-    print("ERROR: Di María's goal not found!")
+if not sequence_input:
+    print("ERROR: Sequence number is required!")
     sys.exit(1)
 
-dimaria_goal = goals.iloc[1]
-goal_frame = int(dimaria_goal['Start Frame'])
-goal_scorer = dimaria_goal.get('From', 'Ángel Di María')
-
-if goal_frame not in tracking_home.index:
-    print(f"ERROR: Goal frame {goal_frame} not found!")
+try:
+    sequence_number = float(sequence_input)
+except ValueError:
+    print("ERROR: Sequence must be a number!")
     sys.exit(1)
 
-goal_time = tracking_home.loc[goal_frame, 'Time [s]']
+# Filter events for this sequence
+sequence_events = events[events['Sequence'] == sequence_number].copy()
 
-print(f"Analyzing: {goal_scorer}'s goal")
-print(f"  Frame: {goal_frame}")
-print(f"  Time: {goal_time:.1f}s")
+if len(sequence_events) == 0:
+    print(f"ERROR: No events found for sequence {sequence_number}!")
+    sys.exit(1)
+
+# Get frame window from sequence events (use frames instead of times for accuracy)
+start_frame = sequence_events['Start Frame'].min()
+end_frame = sequence_events['End Frame'].max()
+
+# Get corresponding times from tracking data
+if start_frame in tracking_home.index and end_frame in tracking_home.index:
+    start_time = tracking_home.loc[start_frame, 'Time [s]']
+    end_time = tracking_home.loc[end_frame, 'Time [s]']
+else:
+    # Fallback to time-based if frames not found
+    start_time = sequence_events['Start Time [s]'].min()
+    end_time = sequence_events['End Time [s]'].max()
+    print("Warning: Using time-based lookup (frames not found in tracking data)")
+
+print(f"\nAnalyzing sequence {sequence_number}")
+print(f"  Events in sequence: {len(sequence_events)}")
+print(f"  Frame range: {int(start_frame)} to {int(end_frame)}")
+print(f"  Time window: {start_time:.1f}s to {end_time:.1f}s")
+print()
+print("First few events in this sequence:")
+print(sequence_events[['Team', 'Type', 'From', 'To', 'Start Frame', 'Start Time [s]']].head(10).to_string(index=False))
 print()
 
 params = mpc.default_model_params()
@@ -142,34 +175,28 @@ print(f"  Mapped {len(player_name_map)} player names")
 print()
 
 # =============================================================================
-# PREPARE FRAMES TO ANALYZE
+# PREPARE FRAMES TO ANALYZE - USE EVENT FRAMES
 # =============================================================================
 
-start_time = max(0, goal_time - TIME_WINDOW_BEFORE_GOAL)
-end_time = goal_time + TIME_WINDOW_AFTER_GOAL
-
+print(f"Frame range: {int(start_frame)} to {int(end_frame)}")
 print(f"Time window: {start_time:.1f}s to {end_time:.1f}s")
 
-frame_times = tracking_home['Time [s]'].values
-time_mask = (frame_times >= start_time) & (frame_times <= end_time)
-all_frames = tracking_home.index[time_mask].tolist()
+# Get unique event frames from the sequence (both start and end frames)
+event_frames = pd.concat([
+    sequence_events['Start Frame'], 
+    sequence_events['End Frame']
+]).dropna().unique()
+event_frames = sorted([int(f) for f in event_frames])
 
-time_interval = 1.0 / TARGET_FPS
-sample_times = np.arange(start_time, end_time + time_interval/2, time_interval)
+print(f"Events have {len(event_frames)} unique frame points")
 
+# Use only frames that exist in tracking data
 frames_to_analyze = []
-for sample_time in sample_times:
-    time_diffs = np.abs(frame_times - sample_time)
-    closest_idx = np.argmin(time_diffs)
-    frame = tracking_home.index[closest_idx]
-    
-    if frame not in tracking_away.index:
-        continue
-    
-    actual_time = tracking_home.loc[frame, 'Time [s]']
-    frames_to_analyze.append(frame)
+for frame in event_frames:
+    if frame in tracking_home.index and frame in tracking_away.index:
+        frames_to_analyze.append(frame)
 
-print(f"Analyzing {len(frames_to_analyze)} frames at {TARGET_FPS} FPS")
+print(f"Analyzing {len(frames_to_analyze)} frames (at event frames)")
 print()
 
 # =============================================================================
@@ -252,10 +279,7 @@ for i in range(len(frames_to_analyze) - 1):
     
     ΔPC_actual = PC_actual - PC_baseline
     
-    # 3. Identify players in attacking half
-    # Home team attacks right (positive x)
-    attacking_half_threshold = 0.0
-    
+    # 3. Identify all home team players
     home_player_cols = [c for c in home_t.keys() 
                         if c[-2:].lower()=='_x' and c!='ball_x' 
                         and 'visibility' not in c.lower()]
@@ -265,8 +289,8 @@ for i in range(len(frames_to_analyze) - 1):
         player_id = col.replace('_x', '')
         x_pos = home_t[col]
         
-        # Only include if in attacking half (x > 0)
-        if x_pos > attacking_half_threshold:
+        # Include all players (not just attacking half)
+        if not pd.isna(x_pos):
             attacking_players.append(player_id)
     
     # 4. Calculate influence for each attacking player
@@ -335,7 +359,7 @@ print(f"Analysis complete: {len(influence_results)} frame transitions analyzed")
 print()
 
 # =============================================================================
-# SUMMARY STATISTICS
+# SUMMARY STATISTICS - PRINT TO TERMINAL
 # =============================================================================
 
 print("=" * 70)
@@ -366,16 +390,18 @@ sorted_players = sorted(player_total_influences.items(),
                        key=lambda x: x[1]['total'], 
                        reverse=True)
 
-print("PLAYER INFLUENCE RANKINGS (Attacking Half Only)")
+print("PLAYER INFLUENCE RANKINGS (All Home Team Players)")
 print("=" * 70)
-print(f"{'Player':<25} {'Total':<12} {'Positive':<12} {'Negative':<12} {'Frames':<8}")
+print(f"{'Rank':<6} {'Player':<25} {'Total':<12} {'Positive':<12} {'Negative':<12} {'Frames':<8}")
 print("-" * 70)
 
-for player_id, stats in sorted_players:
+for rank, (player_id, stats) in enumerate(sorted_players, 1):
     player_name = player_name_map.get(player_id, player_id)
-    print(f"{player_name:<25} {stats['total']:>11.3f} {stats['positive']:>11.3f} "
+    print(f"{rank:<6} {player_name:<25} {stats['total']:>11.3f} {stats['positive']:>11.3f} "
           f"{stats['negative']:>11.3f} {stats['frames']:>7}")
 
+print()
+print(f"Total players analyzed: {len(sorted_players)}")
 print()
 
 # Interaction analysis
@@ -397,97 +423,271 @@ else:
 
 print()
 
-# =============================================================================
-# SAVE RESULTS
-# =============================================================================
-
-print("Saving results...")
-
-if not os.path.exists(OUTPUT_DIR):
-    os.makedirs(OUTPUT_DIR)
-
-# Save detailed results as numpy file
-results_file = os.path.join(OUTPUT_DIR, 'player_influence_results.npz')
-np.savez(results_file, 
-         influence_results=influence_results,
-         player_total_influences=player_total_influences,
-         sorted_players=sorted_players,
-         player_name_map=player_name_map)
-
-print(f"Results saved to: {results_file}")
-print()
-
-# =============================================================================
-# GENERATE TOP PLAYER INFLUENCE HEATMAPS
-# =============================================================================
-
-print("Generating influence heatmaps for top 5 players...")
-
-# Get top 5 players
-top_5_players = sorted_players[:min(5, len(sorted_players))]
-
-for player_id, stats in top_5_players:
-    # Aggregate influence across all frames
-    player_total_delta_PC = np.zeros_like(influence_results[0]['PC_baseline'])
-    frame_count = 0
-    
-    for result in influence_results:
-        if player_id in result['player_influences']:
-            player_total_delta_PC += result['player_influences'][player_id]['delta_PC']
-            frame_count += 1
-    
-    if frame_count == 0:
-        continue
-    
-    # Average influence
-    player_avg_delta_PC = player_total_delta_PC / frame_count
-    
-    # Create figure
-    fig, ax = mviz.plot_pitch(field_dimen=(106., 68.))
-    fig.set_size_inches(10, 6.5)
-    
-    # Plot influence heatmap
-    vmax = max(abs(np.min(player_avg_delta_PC)), abs(np.max(player_avg_delta_PC)))
-    im = ax.imshow(
-        player_avg_delta_PC,
-        extent=(-53, 53, -34, 34),
-        interpolation='spline36',
-        vmin=-vmax, vmax=vmax,
-        cmap='seismic',
-        alpha=0.8,
-        origin='lower'
-    )
-    
-    # Get player name
-    player_name = player_name_map.get(player_id, player_id)
-    
-    # Title
-    ax.set_title(f"{player_name} - Pitch Control Influence\n"
-                f"Total: {stats['total']:.3f} | Positive: {stats['positive']:.3f} | "
-                f"Negative: {stats['negative']:.3f}",
-                fontsize=12, pad=10)
-    
-    # Colorbar
-    cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, shrink=0.8)
-    cbar.set_label('Average ΔPC (Red=Increased Control | Blue=Decreased Control)', fontsize=9)
-    
-    # Save
-    output_file = os.path.join(OUTPUT_DIR, f'player_influence_{player_id}.png')
-    plt.savefig(output_file, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    print(f"  Saved: {output_file}")
-
-print()
 print("=" * 70)
 print("ANALYSIS COMPLETE!")
 print("=" * 70)
 print()
-print("Files generated:")
-print(f"  1. {results_file}")
-print(f"  2. Top 5 player influence heatmaps in {OUTPUT_DIR}/")
+print(f"Match ID: {game_id}")
+print(f"Sequence: {sequence_number}")
+print(f"Time window: {start_time:.1f}s to {end_time:.1f}s")
+print(f"Events in sequence: {len(sequence_events)}")
+print(f"Frames analyzed: {len(influence_results)}")
 print()
-print("Next steps:")
-print("  - Review player rankings to identify key contributors")
-print("  - Examine influence heatmaps to see spatial patterns")
-print("  - Analyze interaction term to understand player coordination")
+
+# =============================================================================
+# GENERATE PITCH CONTROL MOVIE
+# =============================================================================
+
+print("=" * 70)
+print("GENERATING PITCH CONTROL MOVIE")
+print("=" * 70)
+print()
+
+# Create output directory
+if not os.path.exists(OUTPUT_DIR):
+    os.makedirs(OUTPUT_DIR)
+
+movie_filename = f'sequence_{int(sequence_number)}_pitch_control.mp4'
+output_path = os.path.join(OUTPUT_DIR, movie_filename)
+
+# Generate frames for movie using time-based sampling (like the tutorial)
+TARGET_FPS = 5  # Frames per second for movie
+time_interval = 1.0 / TARGET_FPS  # Time between frames
+sample_times = np.arange(start_time, end_time + time_interval/2, time_interval)
+
+print(f"Calculating pitch control for movie at {TARGET_FPS} FPS...")
+print(f"  Time range: {start_time:.1f}s to {end_time:.1f}s")
+print(f"  Sequence duration: {(end_time - start_time):.1f}s")
+print(f"  Sampling at {TARGET_FPS} FPS: {len(sample_times)} frames")
+
+# Find tracking frames closest to each sample time
+frame_times = tracking_home['Time [s]'].values
+movie_frames = []
+
+for sample_time in sample_times:
+    time_diffs = np.abs(frame_times - sample_time)
+    closest_idx = np.argmin(time_diffs)
+    frame = tracking_home.index[closest_idx]
+    
+    if frame in tracking_away.index:
+        movie_frames.append(frame)
+
+print(f"  Found {len(movie_frames)} valid frames to render")
+
+# Calculate pitch control for each frame
+pitch_control_data = []
+
+for i, frame in enumerate(movie_frames):
+    if i % 10 == 0:
+        print(f"  Frame {i+1}/{len(movie_frames)}...")
+    
+    if frame not in tracking_home.index or frame not in tracking_away.index:
+        continue
+    
+    home_row = mpc._row_with_backfilled_velocities(tracking_home, frame)
+    away_row = mpc._row_with_backfilled_velocities(tracking_away, frame)
+    
+    PPCF, xgrid, ygrid = calculate_pitch_control_surface(home_row, away_row, params, GK_numbers)
+    
+    pitch_control_data.append({
+        'PPCF': PPCF,
+        'xgrid': xgrid,
+        'ygrid': ygrid,
+        'home_row': home_row,
+        'away_row': away_row,
+        'ball_pos': np.array([home_row['ball_x'], home_row['ball_y']]),
+        'time': home_row['Time [s]'],
+        'frame': frame
+    })
+
+print()
+print("Creating animation...")
+
+# Get top 5 players for bar chart
+top_5_players = sorted_players[:5]
+top_5_names = [player_name_map.get(p[0], p[0]) for p in top_5_players]
+top_5_influences = [p[1]['total'] for p in top_5_players]
+top_5_ids = [p[0] for p in top_5_players]
+
+# Create player ranking map for annotations
+player_rankings = {p[0]: rank for rank, p in enumerate(sorted_players, 1)}
+
+# Create figure with pitch on top and bar chart below
+fig = plt.figure(figsize=(12, 10))
+gs = fig.add_gridspec(3, 1, height_ratios=[2, 1, 0.1], hspace=0.3)
+
+# Pitch subplot
+plt.subplot(gs[0])
+fig_pitch, ax_pitch = mviz.plot_pitch(field_dimen=(106., 68.))
+plt.close(fig_pitch)  # Close the figure created by plot_pitch
+ax_pitch = fig.add_subplot(gs[0])
+# Manually draw pitch on ax_pitch
+ax_pitch.set_xlim(-53, 53)
+ax_pitch.set_ylim(-34, 34)
+ax_pitch.set_aspect('equal')
+ax_pitch.axis('off')
+# Draw pitch lines
+from matplotlib.patches import Rectangle, Arc, Circle
+ax_pitch.plot([-52.5, 52.5], [-34, -34], 'k-', linewidth=2)
+ax_pitch.plot([-52.5, 52.5], [34, 34], 'k-', linewidth=2)
+ax_pitch.plot([-52.5, -52.5], [-34, 34], 'k-', linewidth=2)
+ax_pitch.plot([52.5, 52.5], [-34, 34], 'k-', linewidth=2)
+ax_pitch.plot([0, 0], [-34, 34], 'k-', linewidth=2)
+ax_pitch.add_patch(Circle((0, 0), 9.15, fill=False, edgecolor='k', linewidth=2))
+
+# Bar chart subplot
+ax_bar = fig.add_subplot(gs[1])
+bars = ax_bar.barh(range(len(top_5_names)), top_5_influences, color='crimson', alpha=0.7)
+ax_bar.set_yticks(range(len(top_5_names)))
+ax_bar.set_yticklabels([f"{i+1}. {name}" for i, name in enumerate(top_5_names)])
+ax_bar.set_xlabel('Total Influence (Pitch Control Change)', fontsize=10)
+ax_bar.set_title('Top 5 Most Influential Players', fontsize=11, fontweight='bold')
+ax_bar.invert_yaxis()
+ax_bar.grid(axis='x', alpha=0.3)
+
+# Add values on bars
+for i, (bar, val) in enumerate(zip(bars, top_5_influences)):
+    ax_bar.text(val, i, f' {val:.2f}', va='center', fontsize=9)
+
+ax = ax_pitch
+
+# Initialize pitch control plot
+data = pitch_control_data[0]
+pitch_control_plot = ax.imshow(
+    data['PPCF'],
+    extent=(-53, 53, -34, 34),
+    interpolation='spline36',
+    vmin=0.0, vmax=1.0,
+    cmap='bwr',
+    alpha=0.6,
+    origin='lower'
+)
+
+# Initialize time text
+time_text = ax.text(
+    0.02, 0.98, '',
+    transform=ax.transAxes,
+    fontsize=14,
+    verticalalignment='top',
+    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+)
+
+def animate(frame_idx):
+    """Animation function"""
+    data = pitch_control_data[frame_idx]
+    
+    # Update pitch control surface
+    pitch_control_plot.set_data(data['PPCF'])
+    
+    # Clear previous player positions and text annotations
+    for artist in ax.lines + ax.collections:
+        artist.remove()
+    
+    # Clear text annotations (ranking numbers)
+    for txt in ax.texts[:]:
+        if txt != time_text:  # Don't remove the time text
+            txt.remove()
+    
+    home_row = data['home_row']
+    away_row = data['away_row']
+    
+    # Home team (red) with ranking annotations
+    x_cols_home = [c for c in home_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
+    y_cols_home = [c for c in home_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
+    ax.plot(home_row[x_cols_home], home_row[y_cols_home], 'ro', markersize=10, alpha=0.7)
+    
+    # Add ranking numbers to players
+    for x_col, y_col in zip(x_cols_home, y_cols_home):
+        player_id = x_col.replace('_x', '')
+        if player_id in player_rankings and player_rankings[player_id] <= 5:  # Only top 5
+            x_pos = home_row[x_col]
+            y_pos = home_row[y_col]
+            if not pd.isna(x_pos) and not pd.isna(y_pos):
+                rank = player_rankings[player_id]
+                ax.text(x_pos, y_pos, str(rank), 
+                       fontsize=8, fontweight='bold', color='white',
+                       ha='center', va='center', zorder=11)
+    
+    # Away team (blue)
+    x_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
+    y_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
+    ax.plot(away_row[x_cols_away], away_row[y_cols_away], 'bo', markersize=10, alpha=0.7)
+    
+    # Ball
+    ball_pos = data['ball_pos']
+    ax.plot(ball_pos[0], ball_pos[1], 'ko', markersize=8, alpha=1.0, linewidth=0, zorder=10)
+    
+    # Update time text
+    time_str = f"Time: {data['time']:.1f}s | Frame: {frame_idx+1}/{len(pitch_control_data)}"
+    time_text.set_text(time_str)
+    
+    return [pitch_control_plot, time_text]
+
+# Create animation
+print(f"Generating animation with {len(pitch_control_data)} frames...")
+interval_ms = int(1000 / TARGET_FPS)  # milliseconds between frames
+anim = animation.FuncAnimation(
+    fig, 
+    animate, 
+    frames=len(pitch_control_data),
+    interval=interval_ms,
+    blit=False,
+    repeat=True
+)
+
+# Add title
+fig.suptitle(f"Pitch Control & Player Influence - Sequence {int(sequence_number)}", fontsize=16, y=0.96)
+
+# Add colorbar using the colorbar subplot area
+cbar_ax = fig.add_subplot(gs[2])
+cbar = plt.colorbar(
+    plt.cm.ScalarMappable(cmap='bwr', norm=plt.Normalize(vmin=0, vmax=1)),
+    cax=cbar_ax,
+    orientation='horizontal'
+)
+cbar.set_label('Pitch Control Probability (Red=Home, Blue=Away)', fontsize=10)
+
+# Save animation
+print(f"Saving movie to: {output_path}")
+print("Note: This may take a while...")
+
+writer = animation.FFMpegWriter(
+    fps=TARGET_FPS,
+    metadata=dict(artist='LaurieOnTracking'),
+    bitrate=5000
+)
+
+try:
+    anim.save(output_path, writer=writer, dpi=150)
+    print()
+    print("=" * 70)
+    print("MOVIE GENERATION COMPLETE!")
+    print("=" * 70)
+    print(f"Movie saved to: {output_path}")
+    print(f"Frames: {len(pitch_control_data)}")
+    print(f"Game time duration: {end_time - start_time:.1f} seconds")
+    print(f"Movie duration: {len(pitch_control_data) / TARGET_FPS:.1f} seconds")
+    print(f"Playback FPS: {TARGET_FPS}")
+    print()
+    
+except Exception as e:
+    print()
+    print(f"ERROR: Failed to save movie: {e}")
+    print()
+    print("Note: This script requires FFMpeg to be installed.")
+    print("To install FFMpeg:")
+    print("  - Windows: choco install ffmpeg")
+    print("  - Mac: brew install ffmpeg")
+    print("  - Linux: sudo apt-get install ffmpeg")
+    print()
+    
+    # Try to save as GIF as fallback
+    print("Attempting to save as GIF instead...")
+    gif_path = output_path.replace('.mp4', '.gif')
+    try:
+        anim.save(gif_path, writer='pillow', fps=1, dpi=100)
+        print(f"GIF saved to: {gif_path}")
+    except Exception as gif_error:
+        print(f"GIF save also failed: {gif_error}")
+
+plt.close()

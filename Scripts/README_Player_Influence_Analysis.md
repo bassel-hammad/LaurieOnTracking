@@ -2,7 +2,7 @@
 
 ## Overview
 
-`generate_player_influence_analysis.py` quantifies individual player contributions to pitch control dynamics using a **sequential perturbation method**. This tool reveals which players created or destroyed space during key match sequences, and how much of the effect was due to coordinated team movement versus individual actions.
+`generate_player_influence_analysis.py` quantifies individual player contributions to pitch control dynamics using a **sequential perturbation method**. This tool reveals which players created or destroyed space during specific match sequences by isolating each player's individual impact on pitch control changes.
 
 ---
 
@@ -10,18 +10,30 @@
 
 ### Core Functionality
 
-The script analyzes a specific time window (default: 12 seconds around Di María's goal in the 2022 World Cup Final) and:
+The script analyzes a user-selected sequence of play and:
 
-1. **Isolates each player's contribution** to pitch control changes
-2. **Ranks players** by their total influence on space creation/destruction
-3. **Calculates interaction effects** showing team coordination vs individual impact
-4. **Generates spatial heatmaps** visualizing where each player created the most space
+1. **Prompts for input**:
+   - Match ID (e.g., 10517)
+   - Sequence number (from event data)
+   
+2. **Isolates each player's contribution** to pitch control changes at event transitions
+3. **Ranks all 11 players** by their total influence on space control
+4. **Calculates interaction effects** showing team coordination vs individual impact
+5. **Generates an animated video** showing pitch control evolution with player rankings overlaid
 
-### Output Files
+### Output
 
-- **`player_influence_results.npz`**: Complete analysis data (pitch control surfaces, individual contributions, player rankings)
-- **`player_influence_[PlayerName].png`**: Top 5 players' spatial influence heatmaps
-- **Console output**: Rankings table and interaction statistics
+- **Console output**: 
+  - Complete rankings table for all 11 home team players
+  - Influence metrics (total, positive, negative)
+  - Interaction analysis statistics
+  - Sequence event details
+  
+- **Video file** (`sequence_X_pitch_control.mp4`):
+  - Animated pitch control surface (red = home control, blue = away control)
+  - Player positions with ranking numbers (1-5) on top contributors
+  - Bar chart showing top 5 most influential players
+  - Plays at 5 FPS matching game time duration
 
 ---
 
@@ -29,47 +41,76 @@ The script analyzes a specific time window (default: 12 seconds around Di María
 
 ### The Core Idea
 
-**Question**: When the pitch control changes from frame `t` to `t+1`, how much did *each individual player* contribute?
+**Question**: When the pitch control changes during an event (e.g., a pass), how much did *each individual player* contribute to that change?
 
-**Method**: Freeze all players at time `t`, then move *only one player* to their `t+1` position. Measure the change. This isolates that player's individual effect.
+**Method**: Freeze all players at event time `t`, then move *only one player* to their position at event time `t+1`. Measure the change. This isolates that player's individual effect.
 
 ### Mathematical Framework
 
-For each frame transition (`t` → `t+1`):
+For each event transition (event `i` → event `i+1`):
 
-1. **Baseline**: Calculate pitch control with all players at time `t`
+1. **Baseline**: Calculate pitch control with all players at event `i`
    ```
-   PC_baseline = PitchControl(all_players_at_t)
+   PC_baseline = PitchControl(all_players_at_event_i)
    ```
 
-2. **Actual**: Calculate pitch control with all players at time `t+1`
+2. **Actual**: Calculate pitch control with all players at event `i+1`
    ```
-   PC_actual = PitchControl(all_players_at_t+1)
+   PC_actual = PitchControl(all_players_at_event_i+1)
    ΔPC_actual = PC_actual - PC_baseline
    ```
 
-3. **Individual Attribution**: For each player `i`:
+3. **Individual Contributions**: For each player `k`:
    ```
-   PC_i = PitchControl(only_player_i_moves_to_t+1, others_stay_at_t)
-   ΔPC_i = PC_i - PC_baseline
+   # Move ONLY player k to event i+1, keep all others at event i
+   PC_only_k_moved = PitchControl(player_k_at_event_i+1, others_at_event_i)
+   
+   # Player k's isolated contribution
+   ΔPC_player_k = PC_only_k_moved - PC_baseline
    ```
 
-4. **Interaction Term**: The coordinated effect beyond individual contributions
+4. **Aggregate across all events** in the sequence:
    ```
-   ΔPC_sum = sum(ΔPC_i for all players)
-   Interaction = ΔPC_actual - ΔPC_sum
+   Total_Influence_k = Σ |ΔPC_player_k| across all event transitions
    ```
+
+### Key Metrics
+
+**Total Influence**: Sum of absolute pitch control changes caused by a player's movements
+- Higher values = player had more impact on space control
+- Captures both space creation (positive ΔPC) and space destruction (negative ΔPC)
+
+**Positive Influence**: Sum of pitch control increases
+- Space the player created for their team
+
+**Negative Influence**: Sum of pitch control decreases  
+- Space the player gave away or failed to control
+
+**Interaction Term**: Difference between actual change and sum of individual contributions
+```
+Interaction = ΔPC_actual - Σ(ΔPC_player_k)
+```
+- Low interaction (<10%) = changes explained by individual movements
+- High interaction (>20%) = significant coordination effects between players
 
 ### Why This Method?
 
 **Advantages over alternatives:**
 
-- ✅ **Exact causal attribution**: No approximations or gradients
-- ✅ **Simple interpretation**: "If only this player moved, here's the effect"
-- ✅ **Reveals synergies**: Interaction term shows coordinated movement effects
-- ✅ **No assumptions** about player influence functions or spatial models
+- ✅ **Exact causal attribution**: Directly measures each player's impact by isolation
+- ✅ **Simple interpretation**: "If only this player moved, here's what changed"
+- ✅ **Reveals synergies**: Interaction term quantifies coordinated movement effects
+- ✅ **No assumptions** about influence functions beyond the pitch control model itself
+- ✅ **Event-based**: Analyzes actual game events rather than arbitrary time intervals
 
-**Conceptual analogy**: Like A/B testing in experiments - change one variable, measure the effect, isolate causality.
+**Conceptual analogy**: Like A/B testing - change one variable at a time, measure the effect, isolate causality.
+
+### Analysis Granularity
+
+The script analyzes transitions between consecutive event frames:
+- If a sequence has 10 events, it analyzes 9 transitions
+- Each transition shows how pitch control evolved during that specific play
+- Aggregating across all transitions reveals cumulative player impact throughout the sequence
 
 ---
 
@@ -77,353 +118,133 @@ For each frame transition (`t` → `t+1`):
 
 ### Player Rankings
 
-The console output shows:
+The console output shows all 11 players ranked by influence:
 
 ```
-Player                    Total        Positive     Negative     Frames
-----------------------------------------------------------------------
-Ángel Di María                824.083     437.365    -386.718      33
-Alexis Mac Allister           372.875     283.834     -89.041      36
-Julián Álvarez                202.814     113.897     -88.916      37
-Lionel Messi                   87.875      43.061     -44.814      33
+Rank   Player                    Total        Positive     Negative     Frames
+--------------------------------------------------------------------------------
+1      Ángel Di María           824.083      437.365     -386.718         7
+2      Alexis Mac Allister      372.875      283.834      -89.041         8
+3      Julián Álvarez           202.814      113.897      -88.916         9
+4      Lionel Messi              87.875       43.061      -44.814         7
+...
+11     Emiliano Martínez          2.145        1.234       -0.911         9
 ```
 
 #### What Each Column Means:
 
-- **Total**: Sum of absolute changes `sum(|ΔPC_i|)` across all grid cells
-  - **High total** = player caused dramatic pitch control changes (good for attackers!)
-  - This is the **magnitude** of influence, not direction
+- **Rank**: Position in influence hierarchy (1 = most influential)
 
-- **Positive**: Space created for own team `sum(ΔPC_i where ΔPC_i > 0)`
-  - Red zones on heatmap
-  - Represents offensive space creation
+- **Total**: Sum of absolute pitch control changes `Σ|ΔPC|` across all grid cells and events
+  - **High value** = player's movements caused dramatic spatial changes
+  - This is the **magnitude** of influence regardless of direction
+  - Attackers making runs typically have high values
 
-- **Negative**: Space conceded to opponents `sum(ΔPC_i where ΔPC_i < 0)`
-  - Blue zones on heatmap
-  - Represents defensive space loss (or tactical withdrawal)
+- **Positive**: Total pitch control gained for own team `Σ(ΔPC where ΔPC > 0)`
+  - Represents space creation and offensive contribution
+  - Shows areas where the player increased team's territorial dominance
 
-- **Frames**: Number of frames (out of 60) where player was in attacking half
+- **Negative**: Total pitch control lost `Σ(ΔPC where ΔPC < 0)`  
+  - Represents space conceded or defensive vulnerability
+  - Can indicate tactical withdrawal or pressing failures
+
+- **Frames**: Number of event transitions where player was present
+  - Players appearing in more frames have more opportunities to influence
+  - Useful for normalizing influence (influence per frame)
   - Players deeper/wider appear in fewer frames
 
-#### Interpreting Player Roles:
-
-**High Total, Balanced +/-** (e.g., Di María: 824.1 total, +437/-387)
-- **Role**: Primary attacking threat
-- **Interpretation**: Constantly creating AND destroying space through dynamic movement
-- **Tactical meaning**: Forcing defensive reactions, pulling defenders, creating chaos
-
-**High Positive, Low Negative** (e.g., Mac Allister: +284/-89)
-- **Role**: Space creator / Support player
-- **Interpretation**: Efficient movement into unmarked areas
-- **Tactical meaning**: Finding pockets of space, creating passing options without drawing pressure
-
-**Moderate Total** (e.g., Álvarez: 203 total)
-- **Role**: Occupying defenders / Target striker
-- **Interpretation**: Movement attracts defensive attention (negative) but opens space for others (positive)
-- **Tactical meaning**: "Decoy runs" or holding defenders to free teammates
-
-**Low Total** (e.g., Messi: 88 total)
-- **Possible interpretations**:
-  1. Player was relatively stationary (waiting to receive)
-  2. Already tightly marked (defenders stick regardless of movement)
-  3. Positioned in areas where movement has less PC impact
-  4. Gravitational threat (presence alone controls space, movement less important)
-
-### The Interaction Term (84%)
-
-```
-Total actual ΔPC:        3249.447
-Total interaction term:  2730.084
-Interaction percentage:  84.0%
-```
 
 #### What This Means:
 
-**Interaction % = (Actual ΔPC - Sum of Individual ΔPC) / Actual ΔPC × 100**
+**Interaction % = |Actual ΔPC - Sum of Individual ΔPC| / Actual ΔPC × 100**
 
-- **Low interaction (<40%)**: Players moving mostly independently
-- **Medium interaction (40-70%)**: Some coordination, some individual brilliance
-- **High interaction (>70%)**: Highly coordinated team movement - **THIS IS WHAT WE SEE!**
+- **Low interaction (<10%)**: Changes fully explained by individual movements (linear approximation valid)
+- **Medium interaction (10-20%)**: Some nonlinear coordination effects
+- **High interaction (>20%)**: Significant player coupling and coordinated effects
 
-#### Why 84% Is Remarkable:
+#### Interpretation:
 
-**84% means**: The actual pitch control change was **6.3× larger** than what individual movements would predict!
+**High interaction** indicates:
+1. **Defensive overload**: Multiple attackers moving forces defenders to choose who to track → gaps appear
+2. **Synergistic runs**: One player's movement creates space that another exploits
+3. **Non-linear dynamics**: Pitch control model's sigmoid functions amplify coordinated movements
+4. **Tactical choreography**: Pre-planned sequences where timing multiplies individual effects
 
-**Physical explanation**:
-1. **Defensive overload**: When multiple attackers move simultaneously, defenders must choose who to track → gaps appear
-2. **Synergistic runs**: Di María's run pulls defenders → Mac Allister exploits the created gap → Combined effect > sum of parts
-3. **Non-linear dynamics**: Pitch control model has sigmoid functions (1/(1+exp(-x))) → small coordinated changes can cause large PC shifts
-4. **Tactical choreography**: Pre-planned attacking sequences where timing amplifies individual effects
+**Low interaction** suggests:
+- Players moving independently
+- Changes predictable from individual actions
+- Less tactical coordination in the sequence
 
-**Chess analogy**: Moving your queen alone (individual) vs moving queen + rook + bishop simultaneously (coordinated attack) → opponent overwhelmed, interaction effect dominates.
+### Video Output
 
-### Heatmaps
+The generated MP4 file shows:
 
-Each PNG shows spatial distribution of a player's influence:
+**Top Panel - Pitch View**:
+- **Red/blue surface**: Pitch control probability (red = home team controls, blue = away team)
+- **Red dots**: Home team player positions
+- **Blue dots**: Away team player positions  
+- **Black dot**: Ball position
+- **White numbers (1-5)**: Ranking labels on top 5 most influential players
 
-- **Red zones**: Where player's movement increased own team's pitch control
-- **Blue zones**: Where player's movement decreased own team's pitch control (gave space to opponents)
-- **Color intensity**: Magnitude of ΔPC at each location
-- **Symmetric colormap**: Centered at zero, equal scaling for gains/losses
-
-**What to look for:**
-
-- **Red streaks**: Path of attacking runs creating forward space
-- **Blue areas behind player**: Space vacated by forward movement
-- **Red clusters near penalty box**: Prime goal-scoring opportunities created
-- **Spatial patterns**: Where on the pitch each player operates and influences
+**Bottom Panel - Bar Chart**:
+- Horizontal bars showing total influence for top 5 players
+- Ranked from most to least influential
+- Values show magnitude of pitch control changes caused
 
 ---
 
 ## Technical Implementation Details
 
-### Optimization Strategies
+### Frame Synchronization
 
-**Problem**: Calculating pitch control for every player at every frame is computationally expensive.
+The script uses **frame-based analysis** rather than time-based to ensure perfect synchronization:
 
-**Solutions implemented:**
+1. **Event frames**: Extracts Start Frame and End Frame from event data
+2. **Tracking alignment**: Uses these exact frame numbers to query tracking data
+3. **Event transitions**: Analyzes pitch control changes between consecutive event frames
+4. **Video generation**: Samples frames uniformly at 5 FPS within the frame range
 
-1. **Temporal sampling**: 5 FPS (not every frame)
-   - 61 frames over 12 seconds → 60 transitions
-   - Reduces calculations from ~2800 to ~600
+This ensures the analysis and video correspond to the actual game footage.
 
-2. **Spatial filtering**: Only attacking-half players (x > 0)
-   - ~8 players per frame instead of ~11
-   - Focuses on offensive contributors
+### Computational Approach
 
-3. **Frame backfilling**: Use forward-fill for NaN positions
-   - Handles temporary occlusions in tracking data
-   - Prevents calculation failures
-
-### Pitch Control Model
-
-Uses **Spearman's (2018) "Beyond Expected Goals"** framework:
-
-```python
-P(t) = 1 / (1 + exp(-π/√3 * (T_arrival - TTI) / σ))
+**For each event transition**:
+```
+Baseline PC calculation: 1× full pitch control (50×32 grid)
+Actual PC calculation: 1× full pitch control
+Individual attributions: 11× full pitch control (one per player)
+Total: 13 pitch control calculations per transition
 ```
 
-Where:
-- `T_arrival`: Time for ball to reach grid location
-- `TTI`: Player's time to intercept = reaction_time + distance/max_speed
-- `σ`: Uncertainty parameter
-
-**Key parameters** (from `Metrica_PitchControl.py`):
-- `max_player_speed = 10 m/s` (boosted for attacking analysis)
-- `kappa_def = 0.7` (reduced defender advantage)
-- `reaction_time_def = 1.0s` (delayed defender reactions)
-- `lambda_gk = 1.5×` (reduced goalkeeper influence range)
-
-### Data Pipeline
-
-```
-PFF JSON tracking data
-    ↓
-Metrica CSV format (via PFF_to_Metrica_Adapter.py)
-    ↓
-Calculate velocities (Metrica_Velocities.py)
-    ↓
-Identify goal frame and time window
-    ↓
-For each frame transition:
-    ├─ Calculate baseline PC (all at t)
-    ├─ Calculate actual PC (all at t+1)
-    ├─ For each attacking player:
-    │   └─ Calculate PC with only that player moved
-    └─ Calculate interaction term
-    ↓
-Aggregate statistics and generate heatmaps
-```
-
----
+**Optimization**: Analyzes only event transitions (typically 5-10) rather than every tracking frame (hundreds)
 
 ## How to Use
 
-### Basic Usage
+### Running the Script
 
 ```bash
-python Scripts\generate_player_influence_analysis.py
+python Scripts/generate_player_influence_analysis.py
 ```
 
-### Modifying Analysis Parameters
+### Interactive Prompts
 
-Edit the script to change:
+1. **Enter match ID**: e.g., `10517` (World Cup Final 2022)
+2. **Select sequence**: Choose from available sequences shown
+   - Sequences are possession chains or tactical phases
+   - Each sequence contains multiple related events
 
-**Time window**:
-```python
-time_before = 6.0  # seconds before goal
-time_after = 6.0   # seconds after goal
-```
-
-**Frame rate**:
-```python
-fps_target = 5  # frames per second (lower = faster, higher = more detailed)
-```
-
-**Spatial filter**:
-```python
-attacking_half_threshold = 0  # x-coordinate (0 = halfway line)
-```
-
-**Goal selection**:
-```python
-dimaria_goal = goals.iloc[1]  # 0-indexed: 0=first goal, 1=second, etc.
-```
-
-### Analyzing Different Sequences
-
-To analyze a different goal or passage of play:
-
-1. **Find the event**: Check `events` DataFrame for the frame number
-2. **Update goal selection**: Change `goals.iloc[index]`
-3. **Adjust time window**: Modify `time_before` and `time_after`
-4. **Run script**: Results will overwrite previous output
-
-### Loading Saved Results
-
-```python
-import numpy as np
-
-# Load the NPZ file
-data = np.load('Metrica_Output/player_influence_results.npz', allow_pickle=True)
-
-# Access player names
-player_names = data['player_name_map'].item()
-
-# Access rankings
-sorted_players = data['sorted_players']
-
-# Access frame-by-frame data
-influence_results = data['influence_results']
-
-# Example: Get Di María's influence in frame 10
-frame_10 = influence_results[10]
-dimaria_influence = frame_10['player_influences']['Home_11']
-print(f"Frame 10 - Di María total influence: {dimaria_influence['total_influence']:.3f}")
-```
-
----
-
-## Theoretical Background
-
-### Why Sequential Perturbation?
-
-Other approaches and their limitations:
-
-1. **Gradient-based methods** (∂PC/∂x_i, ∂PC/∂y_i):
-   - Problem: Gradients show *where* to move, not *how much* space was created
-   - Requires numerical differentiation (approximation errors)
-   - Doesn't capture non-linear interactions
-
-2. **Functional derivatives** (δPC/δθ_i):
-   - Problem: Complex calculus, assumes smooth differentiability
-   - Hard to interpret physically
-   - Still doesn't separate individual vs interaction effects
-
-3. **Shapley values** (game theory):
-   - Problem: Requires 2^N calculations (exponential in player count)
-   - Computationally prohibitive for real-time analysis
-   - Assumes coalition structures that may not apply to continuous space
-
-**Sequential perturbation advantages**:
-- ✅ Direct measurement, no approximations
-- ✅ Linear complexity: O(N) calculations per frame
-- ✅ Clean separation: individual effects + interaction term
-- ✅ Intuitive interpretation: "freeze all but one, measure change"
-
-### Connection to Partial Differential Equations
-
-The pitch control surface PC(x, y, t) can be viewed as solving a time-dependent PDE:
+### Example Session
 
 ```
-∂PC/∂t = F(PC, player_positions(t), player_velocities(t))
+Enter match ID (e.g., 10517): 10517
+Available sequences: [1.0, 2.0, 3.0, 4.0, ...]
+Enter sequence number (e.g., 1): 45
+
+Analyzing sequence 45.0
+  Events in sequence: 8
+  Frame range: 15234 to 15567
+  Time window: 508.3s to 520.8s
 ```
-
-Where:
-- `PC(x,y,t)`: Pitch control at location (x,y) and time t
-- `F`: Non-linear function from Spearman model
-
-**Sequential perturbation** effectively measures:
-```
-∂PC/∂p_i ≈ [PC(p_i at t+1) - PC(p_i at t)] / Δt
-```
-
-Where `p_i` is player i's position vector. This is a **finite difference approximation** of the partial derivative with respect to player position.
-
-The **interaction term** captures higher-order derivatives:
-```
-Interaction ≈ ∑∑ ∂²PC/∂p_i∂p_j * Δp_i * Δp_j  (cross-terms)
-```
-
-When interaction is high (84%), these cross-partial derivatives dominate → player movements are strongly coupled.
-
----
-
-## Limitations and Future Work
-
-### Current Limitations
-
-1. **Computational cost**: ~1-2 minutes for 60 frame transitions
-   - Could parallelize player calculations (independent)
-   - Could use GPU-accelerated PC calculations
-
-2. **Only attacking half**: Misses defensive players' contributions
-   - Easy to enable by removing `attacking_half_threshold` filter
-   - Would double computation time
-
-3. **Linear decomposition**: Interaction term is "everything else" (black box)
-   - Doesn't identify *which* player pairs have strongest synergy
-   - Could extend to pairwise interaction matrix
-
-4. **Single time window**: Analyzes one goal sequence
-   - Could batch-process multiple goals for comparison
-   - Could create movies showing influence evolution
-
-### Potential Extensions
-
-**Pairwise Synergy Analysis**:
-```python
-# Calculate interaction between players i and j
-PC_i_and_j = PitchControl(only_i_and_j_move)
-synergy_ij = PC_i_and_j - PC_baseline - ΔPC_i - ΔPC_j
-```
-
-**Temporal Influence Movies**:
-- Create video showing influence heatmaps evolving over time
-- Identify "key moments" where influence spikes
-- Overlay with actual player positions and ball location
-
-**Defensive Analysis**:
-- Run same method on defending team
-- Find which defenders best prevented space creation
-- Compare attacking influence vs defensive containment
-
-**Optimal Movement Gradients**:
-```python
-gradient_x = ∂(ΔPC)/∂x_i  # Which direction should player move?
-gradient_y = ∂(ΔPC)/∂y_i  # To maximize space creation
-```
-
-**Multi-Goal Comparison**:
-- Compare interaction % across different goals
-- Identify tactical patterns (high interaction = coordinated attacks)
-- Cluster goals by influence signatures
-
----
-
-## Example Interpretation: Di María's Goal
-
-### The Numbers
-
-```
-Ángel Di María:      824.1 total (+437.4 / -386.7)
-Alexis Mac Allister: 372.9 total (+283.8 / -89.0)
-Julián Álvarez:      202.8 total (+113.9 / -88.9)
-Lionel Messi:         87.9 total (+43.1 / -44.8)
-
-Interaction: 84.0% (2730.1 / 3249.4)
-```
-
 ## References
 
 - **Spearman, W.** (2018). "Beyond Expected Goals." *MIT Sloan Sports Analytics Conference*.
