@@ -479,6 +479,9 @@ class PFFToMetricaAdapter:
                 if idx < 5:
                     event_time = event['Start Time [s]']
                     tracking_time = tracking_df.loc[target_frame, 'Time [s]']
+                    # Handle case where tracking_time might be a Series (duplicate indices)
+                    if hasattr(tracking_time, 'iloc'):
+                        tracking_time = tracking_time.iloc[0]
                     print(f"   Event {idx} (ID: {event_id}): {event_time:.1f}s  Frame {target_frame} [Track time: {tracking_time:.1f}s]")
             else:
                 mapped_events.loc[idx, 'Start Frame'] = None

@@ -41,7 +41,13 @@ def _row_with_backfilled_velocities(team_df, frame_idx):
 
     Ensures the model uses realistic velocities at event frames.
     """
-    row = team_df.loc[frame_idx].copy()
+    import pandas as pd
+    row = team_df.loc[frame_idx]
+    # Handle duplicate frame indices (returns DataFrame instead of Series)
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    row = row.copy()
+    
     # Identify player x/y columns
     x_columns = [c for c in row.keys() if c.endswith('_x') and c != 'ball_x']
     y_columns = [c for c in row.keys() if c.endswith('_y') and c != 'ball_y']
@@ -57,8 +63,24 @@ def _row_with_backfilled_velocities(team_df, frame_idx):
         next_idx = None
 
     t0 = row.get('Time [s]', np.nan)
-    t_prev = team_df.loc[prev_idx]['Time [s]'] if prev_idx is not None else np.nan
-    t_next = team_df.loc[next_idx]['Time [s]'] if next_idx is not None else np.nan
+    # Handle potential DataFrames from duplicate indices
+    if prev_idx is not None:
+        prev_row = team_df.loc[prev_idx]
+        if isinstance(prev_row, pd.DataFrame):
+            prev_row = prev_row.iloc[0]
+        t_prev = prev_row['Time [s]']
+    else:
+        prev_row = None
+        t_prev = np.nan
+    
+    if next_idx is not None:
+        next_row = team_df.loc[next_idx]
+        if isinstance(next_row, pd.DataFrame):
+            next_row = next_row.iloc[0]
+        t_next = next_row['Time [s]']
+    else:
+        next_row = None
+        t_next = np.nan
 
     def finite_diff(curr, prev, next_, dt_prev, dt_next):
         if not np.isnan(prev) and not np.isnan(next_) and dt_prev > 0 and dt_next > 0:
@@ -91,10 +113,21 @@ def _row_with_backfilled_velocities(team_df, frame_idx):
 
         x0 = row.get(x_col, np.nan)
         y0 = row.get(y_col, np.nan)
-        x_prev = team_df.loc[prev_idx][x_col] if prev_idx is not None else np.nan
-        y_prev = team_df.loc[prev_idx][y_col] if prev_idx is not None else np.nan
-        x_next = team_df.loc[next_idx][x_col] if next_idx is not None else np.nan
-        y_next = team_df.loc[next_idx][y_col] if next_idx is not None else np.nan
+        
+        # Use the already-extracted prev/next rows to avoid duplicate index issues
+        if prev_row is not None:
+            x_prev = prev_row[x_col]
+            y_prev = prev_row[y_col]
+        else:
+            x_prev = np.nan
+            y_prev = np.nan
+            
+        if next_row is not None:
+            x_next = next_row[x_col]
+            y_next = next_row[y_col]
+        else:
+            x_next = np.nan
+            y_next = np.nan
 
         dt_prev = t0 - t_prev if not np.isnan(t0) and not np.isnan(t_prev) else np.nan
         dt_next = t_next - t0 if not np.isnan(t_next) and not np.isnan(t0) else np.nan
