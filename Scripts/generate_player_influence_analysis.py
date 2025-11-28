@@ -503,65 +503,105 @@ for i, frame in enumerate(movie_frames):
 print()
 print("Creating animation...")
 
-# Get top 5 players for bar chart
-top_5_players = sorted_players[:5]
-top_5_names = [player_name_map.get(p[0], p[0]) for p in top_5_players]
-top_5_influences = [p[1]['total'] for p in top_5_players]
-top_5_ids = [p[0] for p in top_5_players]
+# Get all 11 players for bar chart
+all_players = sorted_players[:11]
+all_player_names = [player_name_map.get(p[0], p[0]) for p in all_players]
+all_player_influences = [p[1]['total'] for p in all_players]
+all_player_ids = [p[0] for p in all_players]
 
 # Create player ranking map for annotations
 player_rankings = {p[0]: rank for rank, p in enumerate(sorted_players, 1)}
 
-# Create figure with pitch on top and bar chart below
-fig = plt.figure(figsize=(12, 10))
-gs = fig.add_gridspec(3, 1, height_ratios=[2, 1, 0.1], hspace=0.3)
+# Create figure with pitch on left and bar chart on right
+fig = plt.figure(figsize=(18, 10))
+gs = fig.add_gridspec(2, 2, width_ratios=[2, 1], height_ratios=[20, 1], hspace=0.1, wspace=0.3)
 
-# Pitch subplot
-plt.subplot(gs[0])
-fig_pitch, ax_pitch = mviz.plot_pitch(field_dimen=(106., 68.))
-plt.close(fig_pitch)  # Close the figure created by plot_pitch
-ax_pitch = fig.add_subplot(gs[0])
-# Manually draw pitch on ax_pitch
-ax_pitch.set_xlim(-53, 53)
-ax_pitch.set_ylim(-34, 34)
+# Pitch subplot (left side)
+ax_pitch = fig.add_subplot(gs[0, 0])
+ax_pitch.set_xlim(-55, 55)
+ax_pitch.set_ylim(-36, 36)
 ax_pitch.set_aspect('equal')
 ax_pitch.axis('off')
-# Draw pitch lines
+
+# Draw green pitch rectangle
 from matplotlib.patches import Rectangle, Arc, Circle
-ax_pitch.plot([-52.5, 52.5], [-34, -34], 'k-', linewidth=2)
-ax_pitch.plot([-52.5, 52.5], [34, 34], 'k-', linewidth=2)
-ax_pitch.plot([-52.5, -52.5], [-34, 34], 'k-', linewidth=2)
-ax_pitch.plot([52.5, 52.5], [-34, 34], 'k-', linewidth=2)
-ax_pitch.plot([0, 0], [-34, 34], 'k-', linewidth=2)
-ax_pitch.add_patch(Circle((0, 0), 9.15, fill=False, edgecolor='k', linewidth=2))
+pitch_rect = Rectangle((-52.5, -34), 105, 68, facecolor='#2E8B57', edgecolor='white', linewidth=2, zorder=0)
+ax_pitch.add_patch(pitch_rect)
 
-# Bar chart subplot
-ax_bar = fig.add_subplot(gs[1])
-bars = ax_bar.barh(range(len(top_5_names)), top_5_influences, color='crimson', alpha=0.7)
-ax_bar.set_yticks(range(len(top_5_names)))
-ax_bar.set_yticklabels([f"{i+1}. {name}" for i, name in enumerate(top_5_names)])
-ax_bar.set_xlabel('Total Influence (Pitch Control Change)', fontsize=10)
-ax_bar.set_title('Top 5 Most Influential Players', fontsize=11, fontweight='bold')
-ax_bar.invert_yaxis()
-ax_bar.grid(axis='x', alpha=0.3)
+# Draw pitch lines in white
+ax_pitch.plot([0, 0], [-34, 34], 'white', linewidth=2)  # Halfway line
+ax_pitch.add_patch(Circle((0, 0), 9.15, fill=False, edgecolor='white', linewidth=2))  # Center circle
 
-# Add values on bars
-for i, (bar, val) in enumerate(zip(bars, top_5_influences)):
-    ax_bar.text(val, i, f' {val:.2f}', va='center', fontsize=9)
+# Penalty areas
+# Left penalty area (16.5m)
+ax_pitch.plot([-52.5, -36], [-20.16, -20.16], 'white', linewidth=2)
+ax_pitch.plot([-36, -36], [-20.16, 20.16], 'white', linewidth=2)
+ax_pitch.plot([-52.5, -36], [20.16, 20.16], 'white', linewidth=2)
+
+# Right penalty area
+ax_pitch.plot([52.5, 36], [-20.16, -20.16], 'white', linewidth=2)
+ax_pitch.plot([36, 36], [-20.16, 20.16], 'white', linewidth=2)
+ax_pitch.plot([52.5, 36], [20.16, 20.16], 'white', linewidth=2)
+
+# Goal areas (6 yard box)
+# Left goal area
+ax_pitch.plot([-52.5, -47], [-9.16, -9.16], 'white', linewidth=2)
+ax_pitch.plot([-47, -47], [-9.16, 9.16], 'white', linewidth=2)
+ax_pitch.plot([-52.5, -47], [9.16, 9.16], 'white', linewidth=2)
+
+# Right goal area
+ax_pitch.plot([52.5, 47], [-9.16, -9.16], 'white', linewidth=2)
+ax_pitch.plot([47, 47], [-9.16, 9.16], 'white', linewidth=2)
+ax_pitch.plot([52.5, 47], [9.16, 9.16], 'white', linewidth=2)
+
+# Penalty spots
+ax_pitch.plot(-41.5, 0, 'o', color='white', markersize=4)
+ax_pitch.plot(41.5, 0, 'o', color='white', markersize=4)
+
+# Corner arcs
+corner_arc1 = Arc((-52.5, -34), 2, 2, angle=0, theta1=0, theta2=90, color='white', linewidth=2)
+corner_arc2 = Arc((-52.5, 34), 2, 2, angle=0, theta1=270, theta2=360, color='white', linewidth=2)
+corner_arc3 = Arc((52.5, -34), 2, 2, angle=0, theta1=90, theta2=180, color='white', linewidth=2)
+corner_arc4 = Arc((52.5, 34), 2, 2, angle=0, theta1=180, theta2=270, color='white', linewidth=2)
+ax_pitch.add_patch(corner_arc1)
+ax_pitch.add_patch(corner_arc2)
+ax_pitch.add_patch(corner_arc3)
+ax_pitch.add_patch(corner_arc4)
+
+# Bar chart subplot (right side) - vertical bars
+ax_bar = fig.add_subplot(gs[0, 1])
+# Initialize bars with zero height - they'll be updated in animation
+bars = ax_bar.bar(range(len(all_player_names)), [0] * len(all_player_names), color='crimson', alpha=0.7, width=0.7)
+ax_bar.set_xticks(range(len(all_player_names)))
+ax_bar.set_xticklabels([f"{i+1}" for i in range(len(all_player_names))], fontsize=9)
+ax_bar.set_ylabel('Total Influence', fontsize=11, fontweight='bold')
+ax_bar.set_xlabel('Player Rank', fontsize=10)
+ax_bar.set_title('All 11 Players Ranked by Influence', fontsize=12, fontweight='bold')
+ax_bar.grid(axis='y', alpha=0.3)
+
+# Set y-axis to maximum value from the start (final values)
+max_influence = max(all_player_influences) if all_player_influences else 1
+ax_bar.set_ylim(0, max_influence * 1.15)
+
+# Generate distinct colors for each event (using a colormap)
+import matplotlib.cm as cm
+num_events = len(influence_results)
+event_colors = cm.rainbow(np.linspace(0, 1, num_events))
+
+# Add player names as legend/labels on the right
+legend_labels = [f"{i+1}. {name}" for i, name in enumerate(all_player_names)]
+ax_bar.legend(bars, legend_labels, loc='upper right', fontsize=8, framealpha=0.9)
+
+# Add values on top of bars
+for i, (bar, val) in enumerate(zip(bars, all_player_influences)):
+    height = bar.get_height()
+    ax_bar.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.1f}', ha='center', va='bottom', fontsize=7)
 
 ax = ax_pitch
 
-# Initialize pitch control plot
+# No pitch control visualization - just green pitch
 data = pitch_control_data[0]
-pitch_control_plot = ax.imshow(
-    data['PPCF'],
-    extent=(-53, 53, -34, 34),
-    interpolation='spline36',
-    vmin=0.0, vmax=1.0,
-    cmap='bwr',
-    alpha=0.6,
-    origin='lower'
-)
 
 # Initialize time text
 time_text = ax.text(
@@ -572,16 +612,18 @@ time_text = ax.text(
     bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
 )
 
+# Store references to player and ball artists that will be updated
+player_artists = []
+
 def animate(frame_idx):
     """Animation function"""
+    global player_artists
     data = pitch_control_data[frame_idx]
     
-    # Update pitch control surface
-    pitch_control_plot.set_data(data['PPCF'])
-    
-    # Clear previous player positions and text annotations
-    for artist in ax.lines + ax.collections:
+    # Clear previous player positions only (not pitch lines)
+    for artist in player_artists:
         artist.remove()
+    player_artists = []
     
     # Clear text annotations (ranking numbers)
     for txt in ax.texts[:]:
@@ -591,12 +633,42 @@ def animate(frame_idx):
     home_row = data['home_row']
     away_row = data['away_row']
     
-    # Home team (red) with ranking annotations
+    # Home team - plot in two groups: top 5 and others
     x_cols_home = [c for c in home_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
     y_cols_home = [c for c in home_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
-    ax.plot(home_row[x_cols_home], home_row[y_cols_home], 'ro', markersize=10, alpha=0.7)
     
-    # Add ranking numbers to players
+    # Separate top 5 from rest
+    top_5_x = []
+    top_5_y = []
+    other_x = []
+    other_y = []
+    
+    for x_col, y_col in zip(x_cols_home, y_cols_home):
+        player_id = x_col.replace('_x', '')
+        x_pos = home_row[x_col]
+        y_pos = home_row[y_col]
+        
+        if not pd.isna(x_pos) and not pd.isna(y_pos):
+            if player_id in player_rankings and player_rankings[player_id] <= 5:
+                top_5_x.append(x_pos)
+                top_5_y.append(y_pos)
+            else:
+                other_x.append(x_pos)
+                other_y.append(y_pos)
+    
+    # Plot other players with lighter red (with black stroke)
+    if other_x:
+        line = ax.plot(other_x, other_y, 'o', color="#CC2F2F", markersize=12, alpha=0.6, 
+                markeredgecolor='black', markeredgewidth=1.5)[0]
+        player_artists.append(line)
+    
+    # Plot top 5 with strong saturated red (with black stroke)
+    if top_5_x:
+        line = ax.plot(top_5_x, top_5_y, 'o', color="#FF0033", markersize=14, alpha=0.9,
+                markeredgecolor='black', markeredgewidth=1.5)[0]
+        player_artists.append(line)
+    
+    # Add ranking numbers to top 5 players only
     for x_col, y_col in zip(x_cols_home, y_cols_home):
         player_id = x_col.replace('_x', '')
         if player_id in player_rankings and player_rankings[player_id] <= 5:  # Only top 5
@@ -604,24 +676,67 @@ def animate(frame_idx):
             y_pos = home_row[y_col]
             if not pd.isna(x_pos) and not pd.isna(y_pos):
                 rank = player_rankings[player_id]
-                ax.text(x_pos, y_pos, str(rank), 
-                       fontsize=8, fontweight='bold', color='white',
+                txt = ax.text(x_pos, y_pos, str(rank), 
+                       fontsize=9, fontweight='bold', color='white',
                        ha='center', va='center', zorder=11)
+                player_artists.append(txt)
     
-    # Away team (blue)
+    # Away team (blue) with black stroke
     x_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
     y_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
-    ax.plot(away_row[x_cols_away], away_row[y_cols_away], 'bo', markersize=10, alpha=0.7)
+    line = ax.plot(away_row[x_cols_away], away_row[y_cols_away], 'o', color='#1E90FF', markersize=12, alpha=0.7,
+            markeredgecolor='black', markeredgewidth=1.5)[0]
+    player_artists.append(line)
     
     # Ball
     ball_pos = data['ball_pos']
-    ax.plot(ball_pos[0], ball_pos[1], 'ko', markersize=8, alpha=1.0, linewidth=0, zorder=10)
+    ball_artist = ax.plot(ball_pos[0], ball_pos[1], 'ko', markersize=8, alpha=1.0, linewidth=0, zorder=10)[0]
+    player_artists.append(ball_artist)
     
     # Update time text
     time_str = f"Time: {data['time']:.1f}s | Frame: {frame_idx+1}/{len(pitch_control_data)}"
     time_text.set_text(time_str)
     
-    return [pitch_control_plot, time_text]
+    # Update bar chart heights dynamically based on current frame time
+    # Build stacked bars with different colors for each event
+    current_time = data['time']
+    
+    # Clear old bars and rebuild with stacked segments
+    ax_bar.clear()
+    ax_bar.set_xticks(range(len(all_player_names)))
+    ax_bar.set_xticklabels([f"{i+1}" for i in range(len(all_player_names))], fontsize=9)
+    ax_bar.set_ylabel('Total Influence', fontsize=11, fontweight='bold')
+    ax_bar.set_xlabel('Player Rank', fontsize=10)
+    ax_bar.set_title('All 11 Players Ranked by Influence', fontsize=12, fontweight='bold')
+    ax_bar.grid(axis='y', alpha=0.3)
+    ax_bar.set_ylim(0, max_influence * 1.15)
+    
+    # Build stacked bars - each event is a different segment
+    bottoms = [0.0] * len(all_player_ids)
+    
+    for event_idx, result in enumerate(influence_results):
+        if result['time_t1'] <= current_time:
+            segment_heights = []
+            for player_id in all_player_ids:
+                if player_id in result['player_influences']:
+                    segment_heights.append(result['player_influences'][player_id]['total_influence'])
+                else:
+                    segment_heights.append(0.0)
+            
+            # Draw this event's segment with its unique color
+            ax_bar.bar(range(len(all_player_names)), segment_heights, 
+                      bottom=bottoms, color=event_colors[event_idx], 
+                      alpha=0.8, width=0.7, edgecolor='white', linewidth=0.5)
+            
+            # Update bottoms for next segment
+            bottoms = [b + h for b, h in zip(bottoms, segment_heights)]
+    
+    # Add value labels on top of bars
+    for i, total in enumerate(bottoms):
+        if total > 0:
+            ax_bar.text(i, total, f'{total:.1f}', ha='center', va='bottom', fontsize=7)
+    
+    return [time_text]
 
 # Create animation
 print(f"Generating animation with {len(pitch_control_data)} frames...")
@@ -636,16 +751,7 @@ anim = animation.FuncAnimation(
 )
 
 # Add title
-fig.suptitle(f"Pitch Control & Player Influence - Sequence {int(sequence_number)}", fontsize=16, y=0.96)
-
-# Add colorbar using the colorbar subplot area
-cbar_ax = fig.add_subplot(gs[2])
-cbar = plt.colorbar(
-    plt.cm.ScalarMappable(cmap='bwr', norm=plt.Normalize(vmin=0, vmax=1)),
-    cax=cbar_ax,
-    orientation='horizontal'
-)
-cbar.set_label('Pitch Control Probability (Red=Home, Blue=Away)', fontsize=10)
+fig.suptitle(f"Player Influence Analysis - Sequence {int(sequence_number)}", fontsize=16, y=0.98)
 
 # Save animation
 print(f"Saving movie to: {output_path}")
