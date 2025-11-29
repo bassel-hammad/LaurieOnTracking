@@ -411,31 +411,86 @@ for result in influence_results:
                 'total': 0.0,
                 'positive': 0.0,
                 'negative': 0.0,
+                'net': 0.0,
                 'frames': 0
             }
         
         player_total_influences[player_id]['total'] += influence_data['total_influence']
         player_total_influences[player_id]['positive'] += influence_data['positive_influence']
         player_total_influences[player_id]['negative'] += influence_data['negative_influence']
+        player_total_influences[player_id]['net'] = player_total_influences[player_id]['positive'] + player_total_influences[player_id]['negative']
         player_total_influences[player_id]['frames'] += 1
 
-# Sort by total influence
-sorted_players = sorted(player_total_influences.items(), 
-                       key=lambda x: x[1]['total'], 
+# ===== TABLE 1: TOTAL INFLUENCE RANKINGS =====
+sorted_by_total = sorted(player_total_influences.items(), 
+                         key=lambda x: x[1]['total'], 
+                         reverse=True)
+
+print("TABLE 1: TOTAL INFLUENCE RANKINGS (Magnitude of Impact)")
+print("=" * 80)
+print(f"{'Rank':<6} {'Player':<25} {'Total':<12} {'Frames':<8}")
+print("-" * 80)
+
+for rank, (player_id, stats) in enumerate(sorted_by_total, 1):
+    player_name = player_name_map.get(player_id, player_id)
+    print(f"{rank:<6} {player_name:<25} {stats['total']:>11.3f} {stats['frames']:>7}")
+
+print()
+print(f"Total players analyzed: {len(sorted_by_total)}")
+print()
+print()
+
+# ===== TABLE 2: POSITIVE INFLUENCE RANKINGS =====
+sorted_by_positive = sorted(player_total_influences.items(), 
+                            key=lambda x: x[1]['positive'], 
+                            reverse=True)
+
+print("TABLE 2: POSITIVE INFLUENCE RANKINGS (Space Creation)")
+print("=" * 80)
+print(f"{'Rank':<6} {'Player':<25} {'Positive':<12} {'Frames':<8}")
+print("-" * 80)
+
+for rank, (player_id, stats) in enumerate(sorted_by_positive, 1):
+    player_name = player_name_map.get(player_id, player_id)
+    print(f"{rank:<6} {player_name:<25} {stats['positive']:>11.3f} {stats['frames']:>7}")
+
+print()
+print()
+
+# ===== TABLE 3: NEGATIVE INFLUENCE RANKINGS =====
+sorted_by_negative = sorted(player_total_influences.items(), 
+                            key=lambda x: x[1]['negative'], 
+                            reverse=False)  # Ascending (most negative first)
+
+print("TABLE 3: NEGATIVE INFLUENCE RANKINGS (Space Concession)")
+print("=" * 80)
+print(f"{'Rank':<6} {'Player':<25} {'Negative':<12} {'Frames':<8}")
+print("-" * 80)
+
+for rank, (player_id, stats) in enumerate(sorted_by_negative, 1):
+    player_name = player_name_map.get(player_id, player_id)
+    print(f"{rank:<6} {player_name:<25} {stats['negative']:>11.3f} {stats['frames']:>7}")
+
+print()
+print()
+
+# ===== TABLE 4: NET INFLUENCE RANKINGS =====
+sorted_by_net = sorted(player_total_influences.items(), 
+                       key=lambda x: x[1]['net'], 
                        reverse=True)
 
-print("PLAYER INFLUENCE RANKINGS (All Home Team Players)")
-print("=" * 70)
-print(f"{'Rank':<6} {'Player':<25} {'Total':<12} {'Positive':<12} {'Negative':<12} {'Frames':<8}")
-print("-" * 70)
+print("TABLE 4: NET INFLUENCE RANKINGS (Positive + Negative)")
+print("=" * 80)
+print(f"{'Rank':<6} {'Player':<25} {'Net Gain':<12} {'Positive':<12} {'Negative':<12} {'Frames':<8}")
+print("-" * 80)
 
-for rank, (player_id, stats) in enumerate(sorted_players, 1):
+for rank, (player_id, stats) in enumerate(sorted_by_net, 1):
     player_name = player_name_map.get(player_id, player_id)
-    print(f"{rank:<6} {player_name:<25} {stats['total']:>11.3f} {stats['positive']:>11.3f} "
+    print(f"{rank:<6} {player_name:<25} {stats['net']:>11.3f} {stats['positive']:>11.3f} "
           f"{stats['negative']:>11.3f} {stats['frames']:>7}")
 
 print()
-print(f"Total players analyzed: {len(sorted_players)}")
+print(f"Total players analyzed: {len(sorted_by_net)}")
 print()
 
 # Interaction analysis
@@ -532,14 +587,14 @@ for i, frame in enumerate(movie_frames):
 print()
 print("Creating animation...")
 
-# Get all 11 players for bar chart
-all_players = sorted_players[:11]
+# Get all 11 players for bar chart (use total influence ranking)
+all_players = sorted_by_total[:11]
 all_player_names = [player_name_map.get(p[0], p[0]) for p in all_players]
 all_player_influences = [p[1]['total'] for p in all_players]
 all_player_ids = [p[0] for p in all_players]
 
 # Create player ranking map for annotations
-player_rankings = {p[0]: rank for rank, p in enumerate(sorted_players, 1)}
+player_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_total, 1)}
 
 # Create figure with pitch on left and bar chart on right
 fig = plt.figure(figsize=(18, 10))
@@ -612,14 +667,19 @@ ax_bar.grid(axis='y', alpha=0.3)
 max_influence = max(all_player_influences) if all_player_influences else 1
 ax_bar.set_ylim(0, max_influence * 1.15)
 
+# Store player name text objects (will be positioned below the frame)
+player_name_texts = []
+for i, name in enumerate(all_player_names):
+    # Calculate position in figure coordinates
+    x_pos = 0.69 + (i / len(all_player_names)) * 0.24  # Right half of figure
+    text_obj = fig.text(x_pos, 0.13, name, 
+                       rotation=45, ha='right', va='top', fontsize=7)
+    player_name_texts.append(text_obj)
+
 # Generate distinct colors for each event (using a colormap)
 import matplotlib.cm as cm
 num_events = len(influence_results)
 event_colors = cm.rainbow(np.linspace(0, 1, num_events))
-
-# Add player names as legend/labels on the right
-legend_labels = [f"{i+1}. {name}" for i, name in enumerate(all_player_names)]
-ax_bar.legend(bars, legend_labels, loc='upper right', fontsize=8, framealpha=0.9)
 
 # Add values on top of bars
 for i, (bar, val) in enumerate(zip(bars, all_player_influences)):
