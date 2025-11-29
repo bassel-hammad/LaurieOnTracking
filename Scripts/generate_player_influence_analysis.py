@@ -121,6 +121,12 @@ print("First few events in this sequence:")
 print(sequence_events[['Team', 'Type', 'From', 'To', 'Start Frame', 'Start Time [s]']].head(10).to_string(index=False))
 print()
 
+# Determine which team is attacking in this sequence (majority of events)
+team_counts = sequence_events['Team'].value_counts()
+attacking_team = team_counts.idxmax()
+print(f"Attacking team in this sequence: {attacking_team}")
+print()
+
 params = mpc.default_model_params()
 GK_numbers = [mio.find_goalkeeper(tracking_home), mio.find_goalkeeper(tracking_away)]
 print(f"Goalkeepers: Home #{GK_numbers[0]}, Away #{GK_numbers[1]}")
@@ -279,17 +285,34 @@ for i in range(len(frames_to_analyze) - 1):
     
     ΔPC_actual = PC_actual - PC_baseline
     
-    # 3. Identify all home team players
-    home_player_cols = [c for c in home_t.keys() 
+    # 3. Identify all attacking team players based on sequence
+    if attacking_team == 'Home':
+        attacking_tracking = tracking_home
+        defending_tracking = tracking_away
+        attack_t = home_t
+        attack_t1 = home_t1
+        attack_t_backfilled = home_t_backfilled
+        attack_t1_backfilled = home_t1_backfilled
+        defend_t_backfilled = away_t_backfilled
+    else:  # Away
+        attacking_tracking = tracking_away
+        defending_tracking = tracking_home
+        attack_t = away_t
+        attack_t1 = away_t1
+        attack_t_backfilled = away_t_backfilled
+        attack_t1_backfilled = away_t1_backfilled
+        defend_t_backfilled = home_t_backfilled
+    
+    attack_player_cols = [c for c in attack_t.keys() 
                         if c[-2:].lower()=='_x' and c!='ball_x' 
                         and 'visibility' not in c.lower()]
     
     attacking_players = []
-    for col in home_player_cols:
+    for col in attack_player_cols:
         player_id = col.replace('_x', '')
-        x_pos = home_t[col]
+        x_pos = attack_t[col]
         
-        # Include all players (not just attacking half)
+        # Include all players
         if not pd.isna(x_pos):
             attacking_players.append(player_id)
     
@@ -298,25 +321,36 @@ for i in range(len(frames_to_analyze) - 1):
     
     for player_id in attacking_players:
         # Create hybrid frame: only this player moves to t+1
-        home_hybrid = home_t_backfilled.copy()
+        attack_hybrid = attack_t_backfilled.copy()
         
         # Update only this player's position to t+1
-        home_hybrid[f'{player_id}_x'] = home_t1_backfilled[f'{player_id}_x']
-        home_hybrid[f'{player_id}_y'] = home_t1_backfilled[f'{player_id}_y']
+        attack_hybrid[f'{player_id}_x'] = attack_t1_backfilled[f'{player_id}_x']
+        attack_hybrid[f'{player_id}_y'] = attack_t1_backfilled[f'{player_id}_y']
         
         # Update velocities if they exist
-        if f'{player_id}_vx' in home_t1_backfilled.keys():
-            home_hybrid[f'{player_id}_vx'] = home_t1_backfilled[f'{player_id}_vx']
-            home_hybrid[f'{player_id}_vy'] = home_t1_backfilled[f'{player_id}_vy']
-            home_hybrid[f'{player_id}_speed'] = home_t1_backfilled[f'{player_id}_speed']
+        if f'{player_id}_vx' in attack_t1_backfilled.keys():
+            attack_hybrid[f'{player_id}_vx'] = attack_t1_backfilled[f'{player_id}_vx']
+            attack_hybrid[f'{player_id}_vy'] = attack_t1_backfilled[f'{player_id}_vy']
+            attack_hybrid[f'{player_id}_speed'] = attack_t1_backfilled[f'{player_id}_speed']
         
-        # Calculate PC with only this player moved
-        PC_only_this_player, _, _ = calculate_pitch_control_surface(
-            home_hybrid, away_t_backfilled, params, GK_numbers
-        )
+        # Calculate PC with only this player moved (team order matters for pitch control)
+        if attacking_team == 'Home':
+            PC_only_this_player, _, _ = calculate_pitch_control_surface(
+                attack_hybrid, defend_t_backfilled, params, GK_numbers
+            )
+        else:  # Away team attacking
+            PC_only_this_player, _, _ = calculate_pitch_control_surface(
+                defend_t_backfilled, attack_hybrid, params, GK_numbers
+            )
+            # For away team, invert the pitch control (1 - PPCF)
+            PC_only_this_player = 1 - PC_only_this_player
+            PC_baseline_away = 1 - PC_baseline
         
         # Calculate influence
-        ΔPC_this_player = PC_only_this_player - PC_baseline
+        if attacking_team == 'Home':
+            ΔPC_this_player = PC_only_this_player - PC_baseline
+        else:
+            ΔPC_this_player = PC_only_this_player - PC_baseline_away
         
         # Store influence
         player_influences[player_id] = {
@@ -324,8 +358,8 @@ for i in range(len(frames_to_analyze) - 1):
             'total_influence': np.sum(np.abs(ΔPC_this_player)),
             'positive_influence': np.sum(ΔPC_this_player[ΔPC_this_player > 0]),
             'negative_influence': np.sum(ΔPC_this_player[ΔPC_this_player < 0]),
-            'position_t': (home_t[f'{player_id}_x'], home_t[f'{player_id}_y']),
-            'position_t1': (home_t1[f'{player_id}_x'], home_t1[f'{player_id}_y']),
+            'position_t': (attack_t[f'{player_id}_x'], attack_t[f'{player_id}_y']),
+            'position_t1': (attack_t1[f'{player_id}_x'], attack_t1[f'{player_id}_y']),
         }
     
     # 5. Calculate sum of attributions
@@ -484,15 +518,10 @@ for i, frame in enumerate(movie_frames):
     if frame not in tracking_home.index or frame not in tracking_away.index:
         continue
     
-    home_row = mpc._row_with_backfilled_velocities(tracking_home, frame)
-    away_row = mpc._row_with_backfilled_velocities(tracking_away, frame)
-    
-    PPCF, xgrid, ygrid = calculate_pitch_control_surface(home_row, away_row, params, GK_numbers)
+    home_row = tracking_home.loc[frame].copy()
+    away_row = tracking_away.loc[frame].copy()
     
     pitch_control_data.append({
-        'PPCF': PPCF,
-        'xgrid': xgrid,
-        'ygrid': ygrid,
         'home_row': home_row,
         'away_row': away_row,
         'ball_pos': np.array([home_row['ball_x'], home_row['ball_y']]),
@@ -633,9 +662,23 @@ def animate(frame_idx):
     home_row = data['home_row']
     away_row = data['away_row']
     
-    # Home team - plot in two groups: top 5 and others
-    x_cols_home = [c for c in home_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
-    y_cols_home = [c for c in home_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
+    # Determine which team is attacking and which is defending
+    if attacking_team == 'Home':
+        attack_row = home_row
+        defend_row = away_row
+        attack_color_top5 = "#FF0033"  # Bright red for top 5
+        attack_color_others = "#CC2F2F"  # Darker red for others
+        defend_color = '#1E90FF'  # Blue
+    else:  # Away
+        attack_row = away_row
+        defend_row = home_row
+        attack_color_top5 = "#0033FF"  # Bright blue for top 5
+        attack_color_others = "#2F2FCC"  # Darker blue for others
+        defend_color = '#FF6B6B'  # Light red
+    
+    # Attacking team - plot in two groups: top 5 and others
+    x_cols_attack = [c for c in attack_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
+    y_cols_attack = [c for c in attack_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
     
     # Separate top 5 from rest
     top_5_x = []
@@ -643,10 +686,10 @@ def animate(frame_idx):
     other_x = []
     other_y = []
     
-    for x_col, y_col in zip(x_cols_home, y_cols_home):
+    for x_col, y_col in zip(x_cols_attack, y_cols_attack):
         player_id = x_col.replace('_x', '')
-        x_pos = home_row[x_col]
-        y_pos = home_row[y_col]
+        x_pos = attack_row[x_col]
+        y_pos = attack_row[y_col]
         
         if not pd.isna(x_pos) and not pd.isna(y_pos):
             if player_id in player_rankings and player_rankings[player_id] <= 5:
@@ -656,24 +699,24 @@ def animate(frame_idx):
                 other_x.append(x_pos)
                 other_y.append(y_pos)
     
-    # Plot other players with lighter red (with black stroke)
+    # Plot other attacking players (with black stroke)
     if other_x:
-        line = ax.plot(other_x, other_y, 'o', color="#CC2F2F", markersize=12, alpha=0.6, 
+        line = ax.plot(other_x, other_y, 'o', color=attack_color_others, markersize=12, alpha=0.6, 
                 markeredgecolor='black', markeredgewidth=1.5)[0]
         player_artists.append(line)
     
-    # Plot top 5 with strong saturated red (with black stroke)
+    # Plot top 5 attacking players (with black stroke)
     if top_5_x:
-        line = ax.plot(top_5_x, top_5_y, 'o', color="#FF0033", markersize=14, alpha=0.9,
+        line = ax.plot(top_5_x, top_5_y, 'o', color=attack_color_top5, markersize=14, alpha=0.9,
                 markeredgecolor='black', markeredgewidth=1.5)[0]
         player_artists.append(line)
     
     # Add ranking numbers to top 5 players only
-    for x_col, y_col in zip(x_cols_home, y_cols_home):
+    for x_col, y_col in zip(x_cols_attack, y_cols_attack):
         player_id = x_col.replace('_x', '')
         if player_id in player_rankings and player_rankings[player_id] <= 5:  # Only top 5
-            x_pos = home_row[x_col]
-            y_pos = home_row[y_col]
+            x_pos = attack_row[x_col]
+            y_pos = attack_row[y_col]
             if not pd.isna(x_pos) and not pd.isna(y_pos):
                 rank = player_rankings[player_id]
                 txt = ax.text(x_pos, y_pos, str(rank), 
@@ -681,10 +724,10 @@ def animate(frame_idx):
                        ha='center', va='center', zorder=11)
                 player_artists.append(txt)
     
-    # Away team (blue) with black stroke
-    x_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
-    y_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
-    line = ax.plot(away_row[x_cols_away], away_row[y_cols_away], 'o', color='#1E90FF', markersize=12, alpha=0.7,
+    # Defending team with black stroke
+    x_cols_defend = [c for c in defend_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
+    y_cols_defend = [c for c in defend_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
+    line = ax.plot(defend_row[x_cols_defend], defend_row[y_cols_defend], 'o', color=defend_color, markersize=12, alpha=0.7,
             markeredgecolor='black', markeredgewidth=1.5)[0]
     player_artists.append(line)
     
