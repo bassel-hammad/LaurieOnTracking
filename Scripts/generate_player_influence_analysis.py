@@ -123,8 +123,28 @@ print()
 
 # Determine which team is attacking in this sequence (majority of events)
 team_counts = sequence_events['Team'].value_counts()
-attacking_team = team_counts.idxmax()
-print(f"Attacking team in this sequence: {attacking_team}")
+default_attacking_team = team_counts.idxmax()
+print(f"Detected attacking team in this sequence: {default_attacking_team}")
+print()
+
+# Ask user which team to analyze
+print("Which team do you want to analyze?")
+print("  1. Attacking team (space creation)")
+print("  2. Defending team (space concession)")
+team_choice = input(f"Enter choice (1-2, default: 1 for {default_attacking_team}): ").strip()
+
+if team_choice == '2':
+    # Analyze defending team
+    attacking_team = 'Away' if default_attacking_team == 'Home' else 'Home'
+    analyze_mode = 'defending'
+    print(f"\nAnalyzing DEFENDING team: {attacking_team}")
+    print("Focus: Players who LOST the most pitch control")
+else:
+    # Analyze attacking team (default)
+    attacking_team = default_attacking_team
+    analyze_mode = 'attacking'
+    print(f"\nAnalyzing ATTACKING team: {attacking_team}")
+    print("Focus: Players who CREATED the most space")
 print()
 
 params = mpc.default_model_params()
@@ -472,6 +492,11 @@ for rank, (player_id, stats) in enumerate(sorted_by_negative, 1):
     print(f"{rank:<6} {player_name:<25} {stats['negative']:>11.3f} {stats['frames']:>7}")
 
 print()
+
+# Store the player with most negative influence for highlighting in movie
+most_negative_player = sorted_by_negative[0][0] if sorted_by_negative else None
+most_negative_value = sorted_by_negative[0][1]['negative'] if sorted_by_negative else 0
+print(f"*** Player with MOST NEGATIVE influence: {player_name_map.get(most_negative_player, most_negative_player)} ({most_negative_value:.3f})")
 print()
 
 # ===== TABLE 4: NET INFLUENCE RANKINGS =====
@@ -536,7 +561,11 @@ print()
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
-movie_filename = f'sequence_{int(sequence_number)}_pitch_control.mp4'
+# Generate filename based on analysis mode
+if analyze_mode == 'defending':
+    movie_filename = f'sequence_{int(sequence_number)}_defending_influence.mp4'
+else:
+    movie_filename = f'sequence_{int(sequence_number)}_attacking_influence.mp4'
 output_path = os.path.join(OUTPUT_DIR, movie_filename)
 
 # Generate frames for movie using time-based sampling (like the tutorial)
@@ -587,14 +616,31 @@ for i, frame in enumerate(movie_frames):
 print()
 print("Creating animation...")
 
-# Get all 11 players for bar chart (use total influence ranking)
-all_players = sorted_by_total[:11]
-all_player_names = [player_name_map.get(p[0], p[0]) for p in all_players]
-all_player_influences = [p[1]['total'] for p in all_players]
-all_player_ids = [p[0] for p in all_players]
-
-# Create player ranking map for annotations
-player_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_total, 1)}
+# Get all 11 players for bar chart - use different ranking based on mode
+if analyze_mode == 'defending':
+    # For defending team, show players ranked by NEGATIVE influence (space lost)
+    all_players = sorted_by_negative[:11]
+    all_player_names = [player_name_map.get(p[0], p[0]) for p in all_players]
+    all_player_influences = [abs(p[1]['negative']) for p in all_players]  # Use absolute value for bar height
+    all_player_ids = [p[0] for p in all_players]
+    
+    # Create player ranking map for annotations (by negative influence)
+    player_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_negative, 1)}
+    
+    print(f"Bar chart: Showing top 11 defenders by NEGATIVE influence (space conceded)")
+    print(f"Highlighting: {player_name_map.get(most_negative_player, most_negative_player)} with {most_negative_value:.3f}")
+else:
+    # For attacking team, show players ranked by POSITIVE influence (space created)
+    all_players = sorted_by_positive[:11]
+    all_player_names = [player_name_map.get(p[0], p[0]) for p in all_players]
+    all_player_influences = [p[1]['positive'] for p in all_players]
+    all_player_ids = [p[0] for p in all_players]
+    
+    # Create player ranking map for annotations (by positive influence)
+    player_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_positive, 1)}
+    
+    print(f"Bar chart: Showing top 11 attackers by POSITIVE influence (space created)")
+    print(f"Highlighting: Top 5 players by positive influence")
 
 # Create figure with pitch on left and bar chart on right
 fig = plt.figure(figsize=(18, 10))
@@ -655,12 +701,20 @@ ax_pitch.add_patch(corner_arc4)
 # Bar chart subplot (right side) - vertical bars
 ax_bar = fig.add_subplot(gs[0, 1])
 # Initialize bars with zero height - they'll be updated in animation
-bars = ax_bar.bar(range(len(all_player_names)), [0] * len(all_player_names), color='crimson', alpha=0.7, width=0.7)
+bar_color = '#8B0000' if analyze_mode == 'defending' else 'crimson'  # Dark red for defending
+bars = ax_bar.bar(range(len(all_player_names)), [0] * len(all_player_names), color=bar_color, alpha=0.7, width=0.7)
 ax_bar.set_xticks(range(len(all_player_names)))
 ax_bar.set_xticklabels([f"{i+1}" for i in range(len(all_player_names))], fontsize=9)
-ax_bar.set_ylabel('Total Influence', fontsize=11, fontweight='bold')
-ax_bar.set_xlabel('Player Rank', fontsize=10)
-ax_bar.set_title('All 11 Players Ranked by Influence', fontsize=12, fontweight='bold')
+
+if analyze_mode == 'defending':
+    ax_bar.set_ylabel('Negative Influence (Space Lost)', fontsize=11, fontweight='bold')
+    ax_bar.set_xlabel('Player Rank (by space lost)', fontsize=10)
+    ax_bar.set_title(f'Defending Team - Space Concession', fontsize=12, fontweight='bold')
+else:
+    ax_bar.set_ylabel('Positive Influence (Space Created)', fontsize=11, fontweight='bold')
+    ax_bar.set_xlabel('Player Rank (by space created)', fontsize=10)
+    ax_bar.set_title(f'Attacking Team - Space Creation', fontsize=12, fontweight='bold')
+
 ax_bar.grid(axis='y', alpha=0.3)
 
 # Set y-axis to maximum value from the start (final values)
@@ -736,53 +790,99 @@ def animate(frame_idx):
         attack_color_others = "#2F2FCC"  # Darker blue for others
         defend_color = '#FF6B6B'  # Light red
     
-    # Attacking team - plot in two groups: top 5 and others
+    # Get player column names for the attacking team
     x_cols_attack = [c for c in attack_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
     y_cols_attack = [c for c in attack_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
     
-    # Separate top 5 from rest
-    top_5_x = []
-    top_5_y = []
-    other_x = []
-    other_y = []
-    
-    for x_col, y_col in zip(x_cols_attack, y_cols_attack):
-        player_id = x_col.replace('_x', '')
-        x_pos = attack_row[x_col]
-        y_pos = attack_row[y_col]
+    # Determine which players to highlight based on analysis mode
+    if analyze_mode == 'defending':
+        # Highlight top 5 players with most NEGATIVE influence (lost most space)
+        top_5_x = []
+        top_5_y = []
+        other_x = []
+        other_y = []
         
-        if not pd.isna(x_pos) and not pd.isna(y_pos):
-            if player_id in player_rankings and player_rankings[player_id] <= 5:
-                top_5_x.append(x_pos)
-                top_5_y.append(y_pos)
-            else:
-                other_x.append(x_pos)
-                other_y.append(y_pos)
-    
-    # Plot other attacking players (with black stroke)
-    if other_x:
-        line = ax.plot(other_x, other_y, 'o', color=attack_color_others, markersize=12, alpha=0.6, 
-                markeredgecolor='black', markeredgewidth=1.5)[0]
-        player_artists.append(line)
-    
-    # Plot top 5 attacking players (with black stroke)
-    if top_5_x:
-        line = ax.plot(top_5_x, top_5_y, 'o', color=attack_color_top5, markersize=14, alpha=0.9,
-                markeredgecolor='black', markeredgewidth=1.5)[0]
-        player_artists.append(line)
-    
-    # Add ranking numbers to top 5 players only
-    for x_col, y_col in zip(x_cols_attack, y_cols_attack):
-        player_id = x_col.replace('_x', '')
-        if player_id in player_rankings and player_rankings[player_id] <= 5:  # Only top 5
+        for x_col, y_col in zip(x_cols_attack, y_cols_attack):
+            player_id = x_col.replace('_x', '')
             x_pos = attack_row[x_col]
             y_pos = attack_row[y_col]
+            
             if not pd.isna(x_pos) and not pd.isna(y_pos):
-                rank = player_rankings[player_id]
-                txt = ax.text(x_pos, y_pos, str(rank), 
-                       fontsize=9, fontweight='bold', color='white',
-                       ha='center', va='center', zorder=11)
-                player_artists.append(txt)
+                if player_id in player_rankings and player_rankings[player_id] <= 5:
+                    top_5_x.append(x_pos)
+                    top_5_y.append(y_pos)
+                else:
+                    other_x.append(x_pos)
+                    other_y.append(y_pos)
+        
+        # Plot other players (with black stroke)
+        if other_x:
+            line = ax.plot(other_x, other_y, 'o', color=attack_color_others, markersize=12, alpha=0.6, 
+                    markeredgecolor='black', markeredgewidth=1.5)[0]
+            player_artists.append(line)
+        
+        # Plot top 5 players with most negative influence (with black stroke)
+        if top_5_x:
+            line = ax.plot(top_5_x, top_5_y, 'o', color=attack_color_top5, markersize=14, alpha=0.9,
+                    markeredgecolor='black', markeredgewidth=1.5)[0]
+            player_artists.append(line)
+        
+        # Add ranking numbers to top 5 players
+        for x_col, y_col in zip(x_cols_attack, y_cols_attack):
+            player_id = x_col.replace('_x', '')
+            if player_id in player_rankings and player_rankings[player_id] <= 5:
+                x_pos = attack_row[x_col]
+                y_pos = attack_row[y_col]
+                if not pd.isna(x_pos) and not pd.isna(y_pos):
+                    rank = player_rankings[player_id]
+                    txt = ax.text(x_pos, y_pos, str(rank), 
+                           fontsize=9, fontweight='bold', color='white',
+                           ha='center', va='center', zorder=11)
+                    player_artists.append(txt)
+    else:
+        # Attacking mode: highlight top 5 by positive influence
+        top_5_x = []
+        top_5_y = []
+        other_x = []
+        other_y = []
+        
+        for x_col, y_col in zip(x_cols_attack, y_cols_attack):
+            player_id = x_col.replace('_x', '')
+            x_pos = attack_row[x_col]
+            y_pos = attack_row[y_col]
+            
+            if not pd.isna(x_pos) and not pd.isna(y_pos):
+                if player_id in player_rankings and player_rankings[player_id] <= 5:
+                    top_5_x.append(x_pos)
+                    top_5_y.append(y_pos)
+                else:
+                    other_x.append(x_pos)
+                    other_y.append(y_pos)
+        
+        # Plot other attacking players (with black stroke)
+        if other_x:
+            line = ax.plot(other_x, other_y, 'o', color=attack_color_others, markersize=12, alpha=0.6, 
+                    markeredgecolor='black', markeredgewidth=1.5)[0]
+            player_artists.append(line)
+        
+        # Plot top 5 attacking players (with black stroke)
+        if top_5_x:
+            line = ax.plot(top_5_x, top_5_y, 'o', color=attack_color_top5, markersize=14, alpha=0.9,
+                    markeredgecolor='black', markeredgewidth=1.5)[0]
+            player_artists.append(line)
+        
+        # Add ranking numbers to top 5 players only
+        for x_col, y_col in zip(x_cols_attack, y_cols_attack):
+            player_id = x_col.replace('_x', '')
+            if player_id in player_rankings and player_rankings[player_id] <= 5:  # Only top 5
+                x_pos = attack_row[x_col]
+                y_pos = attack_row[y_col]
+                if not pd.isna(x_pos) and not pd.isna(y_pos):
+                    rank = player_rankings[player_id]
+                    txt = ax.text(x_pos, y_pos, str(rank), 
+                           fontsize=9, fontweight='bold', color='white',
+                           ha='center', va='center', zorder=11)
+                    player_artists.append(txt)
     
     # Defending team with black stroke
     x_cols_defend = [c for c in defend_row.keys() if c[-2:].lower()=='_x' and c!='ball_x' and 'visibility' not in c.lower()]
@@ -808,9 +908,16 @@ def animate(frame_idx):
     ax_bar.clear()
     ax_bar.set_xticks(range(len(all_player_names)))
     ax_bar.set_xticklabels([f"{i+1}" for i in range(len(all_player_names))], fontsize=9)
-    ax_bar.set_ylabel('Total Influence', fontsize=11, fontweight='bold')
-    ax_bar.set_xlabel('Player Rank', fontsize=10)
-    ax_bar.set_title('All 11 Players Ranked by Influence', fontsize=12, fontweight='bold')
+    
+    if analyze_mode == 'defending':
+        ax_bar.set_ylabel('Negative Influence (Space Lost)', fontsize=11, fontweight='bold')
+        ax_bar.set_xlabel('Player Rank (by space lost)', fontsize=10)
+        ax_bar.set_title(f'Defending Team - Space Concession', fontsize=12, fontweight='bold')
+    else:
+        ax_bar.set_ylabel('Positive Influence (Space Created)', fontsize=11, fontweight='bold')
+        ax_bar.set_xlabel('Player Rank (by space created)', fontsize=10)
+        ax_bar.set_title(f'Attacking Team - Space Creation', fontsize=12, fontweight='bold')
+    
     ax_bar.grid(axis='y', alpha=0.3)
     ax_bar.set_ylim(0, max_influence * 1.15)
     
@@ -822,7 +929,12 @@ def animate(frame_idx):
             segment_heights = []
             for player_id in all_player_ids:
                 if player_id in result['player_influences']:
-                    segment_heights.append(result['player_influences'][player_id]['total_influence'])
+                    if analyze_mode == 'defending':
+                        # Use absolute value of negative influence for bar height
+                        segment_heights.append(abs(result['player_influences'][player_id]['negative_influence']))
+                    else:
+                        # Use positive influence for attacking
+                        segment_heights.append(result['player_influences'][player_id]['positive_influence'])
                 else:
                     segment_heights.append(0.0)
             
@@ -854,7 +966,8 @@ anim = animation.FuncAnimation(
 )
 
 # Add title
-fig.suptitle(f"Player Influence Analysis - Sequence {int(sequence_number)}", fontsize=16, y=0.98)
+mode_text = "Defending Team - Space Concession" if analyze_mode == 'defending' else "Attacking Team - Space Creation"
+fig.suptitle(f"Player Influence Analysis - Sequence {int(sequence_number)} ({mode_text})", fontsize=15, y=0.98)
 
 # Save animation
 print(f"Saving movie to: {output_path}")
