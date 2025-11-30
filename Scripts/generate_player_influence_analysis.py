@@ -859,6 +859,7 @@ fig.suptitle(f"Player Influence Analysis - Sequence {int(sequence_number)}", fon
 # Save animation
 print(f"Saving movie to: {output_path}")
 print("Note: This may take a while...")
+sys.stdout.flush()  # Flush output before animation save
 
 writer = animation.FFMpegWriter(
     fps=TARGET_FPS,
@@ -867,7 +868,14 @@ writer = animation.FFMpegWriter(
 )
 
 try:
-    anim.save(output_path, writer=writer, dpi=150)
+    # Suppress matplotlib animation progress output to reduce clutter
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        anim.save(output_path, writer=writer, dpi=150)
+    
+    # Clear any duplicate prints and show final status
+    print("\r" + " " * 80 + "\r", end='')  # Clear line
     print()
     print("=" * 70)
     print("MOVIE GENERATION COMPLETE!")
