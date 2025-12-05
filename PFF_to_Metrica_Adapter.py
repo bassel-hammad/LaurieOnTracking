@@ -38,6 +38,10 @@ class PFFToMetricaAdapter:
         self.original_fps = 29.97  # from metadata
         self.target_fps = 25.0     # Metrica standard
         
+        # Player name mappings (jersey -> name) for each team
+        self.player_names = {'Home': {}, 'Away': {}}
+        self.team_info = {'Home': {}, 'Away': {}}
+        
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
@@ -46,7 +50,6 @@ class PFFToMetricaAdapter:
         print(f"Output: {output_dir}")
         print(f"Game: FIFA World Cup Final 2022 (ID: {game_id})")
         print(f"Processing: First 2 periods only (excludes extra time)")
-
 
     def normalize_coordinates(self, x_meters, y_meters):
         """
@@ -297,6 +300,235 @@ class PFFToMetricaAdapter:
         # For now, return None to use fallback logic
         return None
 
+    def extract_player_team_from_events(self, events_file):
+        """
+        Extract player name -> team mapping from PFF event data.
+        
+        Event data is the most reliable source for determining which team
+        a player belongs to, as gameEvents.homeTeam field is accurate.
+        
+        Parameters:
+        -----------
+        events_file : str
+            Path to the event data JSON file
+            
+        Returns:
+        --------
+        dict : {player_name: team ('Home' or 'Away'), ...}
+        """
+        with open(events_file, 'r', encoding='utf-8') as f:
+            events = json.load(f)
+        
+        player_team_map = {}
+        
+        for event in events:
+            if 'gameEvents' not in event:
+                continue
+            
+            ge = event['gameEvents']
+            is_home = ge.get('homeTeam', False)
+            team = 'Home' if is_home else 'Away'
+            
+            # Get player name from gameEvents
+            player_name = ge.get('playerName')
+            if player_name and player_name not in player_team_map:
+                player_team_map[player_name] = team
+            
+            # Get more players from possessionEvents
+            if 'possessionEvents' in event:
+                poss = event['possessionEvents']
+                
+                # These players are typically from the possession team
+                for name_field in ['passerPlayerName', 'receiverPlayerName', 'shooterPlayerName', 
+                                  'dribblerPlayerName', 'crosserPlayerName', 'touchPlayerName',
+                                  'carrierPlayerName', 'ballCarrierPlayerName']:
+                    name = poss.get(name_field)
+                    if name and name not in player_team_map:
+                        player_team_map[name] = team
+                
+                # Keeper is typically opposing team
+                keeper_name = poss.get('keeperPlayerName')
+                if keeper_name and keeper_name not in player_team_map:
+                    opp_team = 'Away' if team == 'Home' else 'Home'
+                    player_team_map[keeper_name] = opp_team
+                
+                # Defenders/blockers are typically opposing team
+                for name_field in ['defenderPlayerName', 'blockerPlayerName']:
+                    name = poss.get(name_field)
+                    if name and name not in player_team_map:
+                        opp_team = 'Away' if team == 'Home' else 'Home'
+                        player_team_map[name] = opp_team
+        
+        return player_team_map
+
+    def extract_name_to_jersey_from_tracking(self, tracking_file):
+        """
+        Extract player name -> jersey number mapping from PFF tracking data.
+        
+        The tracking data's game_event contains shirt_number and player_name,
+        which provides the name -> jersey mapping.
+        
+        Parameters:
+        -----------
+        tracking_file : str
+            Path to the JSONL tracking file
+            
+        Returns:
+        --------
+        dict : {player_name: jersey_number, ...}
+        """
+        name_to_jersey = {}
+        
+        with open(tracking_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    frame = json.loads(line.strip())
+                    
+                    if 'game_event' in frame and frame['game_event']:
+                        ge = frame['game_event']
+                        shirt = ge.get('shirt_number')
+                        name = ge.get('player_name')
+                        
+                        if shirt and name and name not in name_to_jersey:
+                            name_to_jersey[name] = str(shirt)
+                            
+                except json.JSONDecodeError:
+                    continue
+        
+        return name_to_jersey
+
+    def extract_player_names_from_tracking(self, tracking_file):
+        """
+        Extract player name mappings from PFF tracking data.
+        
+        The tracking data contains game_event objects with shirt_number and player_name,
+        which provides the authoritative jersey number -> player name mapping.
+        
+        Also extracts player_id -> jersey number mapping from game_event objects.
+        
+        Parameters:
+        -----------
+        tracking_file : str
+            Path to the JSONL tracking file
+            
+        Returns:
+        --------
+        dict : {
+            'Home': {jersey: name, ...}, 
+            'Away': {jersey: name, ...},
+            'player_id_to_jersey': {player_id: (jersey, team), ...}
+        }
+        """
+        player_names = {'Home': {}, 'Away': {}}
+        player_id_to_jersey = {}
+        
+        with open(tracking_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    frame = json.loads(line.strip())
+                    
+                    # Check game_event for player info with jersey number
+                    if 'game_event' in frame and frame['game_event']:
+                        ge = frame['game_event']
+                        shirt_number = ge.get('shirt_number')
+                        player_name = ge.get('player_name')
+                        player_id = ge.get('player_id')
+                        is_home = ge.get('home_team', 0)
+                        
+                        if shirt_number and player_name:
+                            team = 'Home' if is_home else 'Away'
+                            player_names[team][str(shirt_number)] = player_name
+                            
+                            # Also store player_id -> jersey mapping if available
+                            if player_id:
+                                player_id_to_jersey[str(player_id)] = (str(shirt_number), team)
+                            
+                except json.JSONDecodeError:
+                    continue
+        
+        return {
+            'Home': player_names['Home'],
+            'Away': player_names['Away'],
+            'player_id_to_jersey': player_id_to_jersey
+        }
+
+    def build_complete_player_mapping(self):
+        """
+        Build complete player name mapping from all available sources.
+        
+        Uses a two-step approach:
+        1. Event data: Reliable source for player name -> team mapping
+        2. Tracking data: Reliable source for player name -> jersey number mapping
+        
+        Combines both to create: team -> {jersey: name}
+        
+        Saves the mapping to a JSON file for later use.
+        """
+        print(" Building player name mapping...")
+        
+        # Load metadata for team info
+        meta_file = os.path.join(self.pff_data_dir, 'Meta Data', f'{self.game_id}.json')
+        with open(meta_file, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        
+        if metadata:
+            meta = metadata[0] if isinstance(metadata, list) else metadata
+            self.team_info = {
+                'Home': {
+                    'id': meta.get('homeTeam', {}).get('id'),
+                    'name': meta.get('homeTeam', {}).get('name'),
+                    'shortName': meta.get('homeTeam', {}).get('shortName')
+                },
+                'Away': {
+                    'id': meta.get('awayTeam', {}).get('id'),
+                    'name': meta.get('awayTeam', {}).get('name'),
+                    'shortName': meta.get('awayTeam', {}).get('shortName')
+                }
+            }
+        
+        # Step 1: Get player name -> team mapping from event data (most reliable for team)
+        events_file = os.path.join(self.pff_data_dir, 'Event Data', f'{self.game_id}.json')
+        player_team_map = self.extract_player_team_from_events(events_file)
+        
+        # Step 2: Get player name -> jersey number from tracking data
+        tracking_file = os.path.join(self.pff_data_dir, 'Tracking Data', f'{self.game_id}.jsonl')
+        name_to_jersey = self.extract_name_to_jersey_from_tracking(tracking_file)
+        
+        # Step 3: Combine to create team -> {jersey: name} mapping
+        self.player_names = {'Home': {}, 'Away': {}}
+        
+        for name, team in player_team_map.items():
+            jersey = name_to_jersey.get(name)
+            if jersey:
+                self.player_names[team][jersey] = name
+        
+        print(f"   Home team ({self.team_info['Home'].get('name', 'Unknown')}): {len(self.player_names['Home'])} players")
+        print(f"   Away team ({self.team_info['Away'].get('name', 'Unknown')}): {len(self.player_names['Away'])} players")
+        
+        # Save to JSON file
+        self.save_player_mapping()
+        
+        return self.player_names
+
+    def save_player_mapping(self):
+        """Save player name mapping to JSON file"""
+        output_game_dir = os.path.join(self.output_dir, f'Sample_Game_{self.game_id}')
+        os.makedirs(output_game_dir, exist_ok=True)
+        
+        mapping_file = os.path.join(output_game_dir, f'Sample_Game_{self.game_id}_PlayerMapping.json')
+        
+        mapping_data = {
+            'game_id': self.game_id,
+            'teams': self.team_info,
+            'players': self.player_names,
+            'player_id_to_jersey': getattr(self, 'player_id_to_jersey', {})
+        }
+        
+        with open(mapping_file, 'w', encoding='utf-8') as f:
+            json.dump(mapping_data, f, indent=2, ensure_ascii=False)
+        
+        print(f"   Saved player mapping to: {mapping_file}")
+
     def convert_events_data(self):
         """Convert PFF event data to Metrica format"""
         print(" Converting event data...")
@@ -520,12 +752,14 @@ class PFFToMetricaAdapter:
             x_meters = player.get('x', np.nan)
             y_meters = player.get('y', np.nan)
             visibility = player.get('visibility', 'UNKNOWN')  # Get visibility status
+            pff_speed = player.get('speed', 0.0)  # PFF's raw speed in m/s
             
             x_norm, y_norm = self.normalize_coordinates(x_meters, y_meters)
             
             frame_info[f'Home_{jersey}_x'] = x_norm
             frame_info[f'Home_{jersey}_y'] = y_norm
             frame_info[f'Home_{jersey}_visibility'] = visibility  # Store visibility
+            frame_info[f'Home_{jersey}_pff_speed'] = pff_speed  # Store PFF's raw speed (m/s)
         
         # Process away team players (France) - RAW COORDINATES ONLY
         away_players_original = frame_data.get('awayPlayers', [])
@@ -537,12 +771,14 @@ class PFFToMetricaAdapter:
             x_meters = player.get('x', np.nan)
             y_meters = player.get('y', np.nan)
             visibility = player.get('visibility', 'UNKNOWN')  # Get visibility status
+            pff_speed = player.get('speed', 0.0)  # PFF's raw speed in m/s
             
             x_norm, y_norm = self.normalize_coordinates(x_meters, y_meters)
             
             frame_info[f'Away_{jersey}_x'] = x_norm
             frame_info[f'Away_{jersey}_y'] = y_norm
             frame_info[f'Away_{jersey}_visibility'] = visibility  # Store visibility
+            frame_info[f'Away_{jersey}_pff_speed'] = pff_speed  # Store PFF's raw speed (m/s)
         
         # Process ball - RAW COORDINATES ONLY
         balls_original = frame_data.get('balls', [])
@@ -613,7 +849,7 @@ class PFFToMetricaAdapter:
                 # Store coordinates
                 processed_frame[f'Home_{player_id}_x'] = player.get('x', 0.0)
                 processed_frame[f'Home_{player_id}_y'] = player.get('y', 0.0)
-                processed_frame[f'Home_{player_id}_speed'] = player.get('speed', 0.0)
+                processed_frame[f'Home_{player_id}_pff_speed'] = player.get('speed', 0.0)  # PFF's raw speed (m/s)
                 
                 # Store visibility - VISIBLE is high quality, ESTIMATED is low quality
                 processed_frame[f'Home_{player_id}_visibility'] = visibility
@@ -627,7 +863,7 @@ class PFFToMetricaAdapter:
                 # Store coordinates
                 processed_frame[f'Away_{player_id}_x'] = player.get('x', 0.0)
                 processed_frame[f'Away_{player_id}_y'] = player.get('y', 0.0)
-                processed_frame[f'Away_{player_id}_speed'] = player.get('speed', 0.0)
+                processed_frame[f'Away_{player_id}_pff_speed'] = player.get('speed', 0.0)  # PFF's raw speed (m/s)
                 
                 # Store visibility
                 processed_frame[f'Away_{player_id}_visibility'] = visibility
@@ -665,7 +901,7 @@ class PFFToMetricaAdapter:
                 player_id = player.get('playerId', i)
                 frame_data[f'Home_{player_id}_x'] = player.get('x', 0.0)
                 frame_data[f'Home_{player_id}_y'] = player.get('y', 0.0)
-                frame_data[f'Home_{player_id}_speed'] = player.get('speed', 0.0)
+                frame_data[f'Home_{player_id}_pff_speed'] = player.get('speed', 0.0)  # PFF's raw speed (m/s)
             
             # Process away players
             away_players = event.get('awayPlayers', [])
@@ -673,7 +909,7 @@ class PFFToMetricaAdapter:
                 player_id = player.get('playerId', i)
                 frame_data[f'Away_{player_id}_x'] = player.get('x', 0.0)
                 frame_data[f'Away_{player_id}_y'] = player.get('y', 0.0)
-                frame_data[f'Away_{player_id}_speed'] = player.get('speed', 0.0)
+                frame_data[f'Away_{player_id}_pff_speed'] = player.get('speed', 0.0)  # PFF's raw speed (m/s)
             
             # Process ball
             ball_data = event.get('ball', [])
@@ -691,6 +927,7 @@ class PFFToMetricaAdapter:
             
         except Exception as e:
             print(f"   Warning: Error processing frame {frame_id}: {e}")
+            return None
             return None
 
     def convert_tracking_data(self, max_frames=None):
@@ -841,19 +1078,19 @@ class PFFToMetricaAdapter:
         # Row 1: Team names
         row1 = ['', '', '']  # Period, Frame, Time
         for jersey in jersey_numbers:
-            row1.extend([team_name, '', ''])  # Team name for x, y, and visibility
+            row1.extend([team_name, '', '', ''])  # Team name for x, y, visibility, pff_speed
         row1.extend(['', ''])  # Ball x and y
         
         # Row 2: Jersey numbers  
         row2 = ['', '', '']  # Period, Frame, Time
         for jersey in jersey_numbers:
-            row2.extend([jersey, '', ''])  # Jersey number for x, y, and visibility
+            row2.extend([jersey, '', '', ''])  # Jersey number for x, y, visibility, pff_speed
         row2.extend(['', ''])  # Ball x and y
         
         # Row 3: Column headers
         row3 = ['Period', 'Frame', 'Time [s]']
         for jersey in jersey_numbers:
-            row3.extend([f'Player{jersey}', '', 'visibility'])  # PlayerX for x, y, and visibility
+            row3.extend([f'Player{jersey}', '', 'visibility', 'pff_speed'])  # PlayerX for x, y, visibility, pff_speed
         row3.extend(['Ball', ''])  # Ball for x and y
         
         # Prepare data rows
@@ -861,15 +1098,17 @@ class PFFToMetricaAdapter:
         for frame_idx, row in tracking_df.iterrows():
             data_row = [row['Period'], frame_idx, row['Time [s]']]
             
-            # Add player positions (x, y, visibility alternating)
+            # Add player positions (x, y, visibility, pff_speed alternating)
             for jersey in jersey_numbers:
                 x_col = f'{team_name}_{jersey}_x'
                 y_col = f'{team_name}_{jersey}_y'
                 vis_col = f'{team_name}_{jersey}_visibility'
+                speed_col = f'{team_name}_{jersey}_pff_speed'
                 data_row.extend([
                     row.get(x_col, np.nan), 
                     row.get(y_col, np.nan),
-                    row.get(vis_col, 'UNKNOWN')
+                    row.get(vis_col, 'UNKNOWN'),
+                    row.get(speed_col, 0.0)
                 ])
             
             # Add ball position
@@ -924,6 +1163,9 @@ class PFFToMetricaAdapter:
         print("=" * 60)
         
         try:
+            # Build player name mapping first
+            self.build_complete_player_mapping()
+            
             # Convert event data (without frame mapping)
             events_df = self.convert_events_data()
             

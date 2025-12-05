@@ -71,9 +71,17 @@ tracking_home, tracking_away, events = mio.to_single_playing_direction(tracking_
 print(f"Data loaded: {len(events)} events, {len(tracking_home):,} tracking frames")
 print()
 
-print("Calculating player velocities...")
-tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
-tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
+# Check if PFF speed columns exist
+pff_speed_cols = [c for c in tracking_home.columns if c.endswith('_pff_speed')]
+if pff_speed_cols:
+    print("Calculating player velocities using HYBRID method (PFF speed + calculated direction)...")
+    tracking_home = mvel.calc_player_velocities_hybrid(tracking_home, smoothing=True, use_pff_speed=True)
+    tracking_away = mvel.calc_player_velocities_hybrid(tracking_away, smoothing=True, use_pff_speed=True)
+    print("  -> Using PFF's raw speed values (calculated at ~15 FPS) for more accurate velocities")
+else:
+    print("Calculating player velocities from position differences...")
+    tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
+    tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
 
 # Get sequence number from user
 available_sequences = events['Sequence'].dropna().unique()
@@ -153,51 +161,27 @@ print(f"Goalkeepers: Home #{GK_numbers[0]}, Away #{GK_numbers[1]}")
 print()
 
 # =============================================================================
-# CREATE PLAYER NAME MAPPING FROM EVENTS
+# LOAD PLAYER NAME MAPPING FROM JSON
 # =============================================================================
 
-print("Creating player name mapping...")
-player_name_map = {}
+print("Loading player name mapping...")
+player_mapping = mio.load_player_mapping(DATADIR, game_id)
 
-# Get all unique players from event data
-for idx, event in events.iterrows():
-    if pd.notna(event.get('From')):
-        player_name = event.get('From')
-        team = event.get('Team')
-        
-        # Try to find matching player number in tracking data
-        # This is approximate - we'll use jersey numbers from events if available
-        if team == 'Home':
-            # Look through home tracking columns for this player
-            # Event data might have player numbers we can match
-            player_id = f"Home_{player_name.split()[-1] if player_name.split()[-1].isdigit() else ''}"
-            if player_id != "Home_":
-                player_name_map[player_id] = player_name
+if player_mapping:
+    print(f"  Home team ({player_mapping.get('teams', {}).get('Home', {}).get('name', 'Unknown')}): {len(player_mapping.get('players', {}).get('Home', {}))} players")
+    print(f"  Away team ({player_mapping.get('teams', {}).get('Away', {}).get('name', 'Unknown')}): {len(player_mapping.get('players', {}).get('Away', {}))} players")
+    
+    # Convert to player_name_map format: {'Home_10': 'Lionel Messi', ...}
+    player_name_map = {}
+    for team in ['Home', 'Away']:
+        team_players = player_mapping.get('players', {}).get(team, {})
+        for jersey, name in team_players.items():
+            player_name_map[f'{team}_{jersey}'] = name
+else:
+    print("  Warning: No player mapping found, using jersey numbers only")
+    player_name_map = {}
 
-# Manual mapping for known players (World Cup Final 2022)
-# Argentina (Home) player numbers
-known_players = {
-    'Home_10': 'Lionel Messi',
-    'Home_11': 'Ángel Di María',
-    'Home_9': 'Julián Álvarez',
-    'Home_7': 'Rodrigo De Paul',
-    'Home_24': 'Enzo Fernández',
-    'Home_20': 'Alexis Mac Allister',
-    'Home_23': 'Emiliano Martínez',  # GK
-    'Home_26': 'Nahuel Molina',
-    'Home_3': 'Nicolás Tagliafico',
-    'Home_13': 'Cristian Romero',
-    'Home_19': 'Nicolás Otamendi',
-    'Home_5': 'Leandro Paredes',
-    'Home_8': 'Marcos Acuña',
-    'Home_21': 'Paulo Dybala',
-    'Home_22': 'Lautaro Martínez',
-}
-
-# Merge with any found from events
-player_name_map.update(known_players)
-
-print(f"  Mapped {len(player_name_map)} player names")
+print(f"  Total mapped: {len(player_name_map)} players")
 print()
 
 # =============================================================================
@@ -562,13 +546,13 @@ total_interaction = np.nansum([np.nansum(np.abs(r['interaction'])) for r in infl
 total_actual_change = np.nansum([np.nansum(np.abs(r['ΔPC_actual'])) for r in influence_results])
 interaction_percentage = (total_interaction / total_actual_change * 100) if total_actual_change > 0 else 0
 
-print(f"Total actual ΔPC (attacking half only): {total_actual_change:.3f}")
+print(f"Total actual dPC (attacking half only): {total_actual_change:.3f}")
 print(f"Total interaction term:  {total_interaction:.3f}")
 print(f"Interaction percentage:  {interaction_percentage:.1f}%")
 print()
 
 if interaction_percentage < 10:
-    print("✓ Low interaction - linear approximation is good!")
+    print("Low interaction - linear approximation is good!")
 elif interaction_percentage < 20:
     print("~ Moderate interaction - some nonlinear effects")
 else:

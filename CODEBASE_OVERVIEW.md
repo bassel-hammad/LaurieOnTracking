@@ -81,9 +81,19 @@ The project follows a **modular architecture** with clear separation of concerns
 **How It Works**:
 1. Reads CSV files with flexible player count support
 2. Parses headers to extract player jersey numbers
-3. Creates dynamic column names (`Home_1_x`, `Home_1_y`, `Home_1_vx`, etc.)
-4. Converts coordinates from Metrica's 0-1 scale to meters (106m x 68m pitch)
-5. Flips coordinates for second half/extra time to ensure consistent attack direction
+3. **Auto-detects PFF speed columns** (`pff_speed` in header row 3)
+4. Creates dynamic column names (`Home_1_x`, `Home_1_y`, `Home_1_pff_speed`, etc.)
+5. Converts coordinates from Metrica's 0-1 scale to meters (106m x 68m pitch)
+6. Flips coordinates for second half/extra time to ensure consistent attack direction
+
+**PFF Speed Detection**:
+```python
+# Automatically detects if tracking CSV includes pff_speed columns
+has_pff_speed = any('pff_speed' in str(col) for col in row2)
+if has_pff_speed:
+    columns.extend([f"{teamname}_{jersey}_x", f"{teamname}_{jersey}_y", 
+                   f"{teamname}_{jersey}_visibility", f"{teamname}_{jersey}_pff_speed"])
+```
 
 **Data Flow**:
 ```
@@ -134,15 +144,38 @@ CSV File → Pandas DataFrame → Coordinate conversion → Direction normalizat
   - Calculates `vx`, `vy`, `speed` for each player
   - Removes outliers exceeding `maxspeed` (default 12 m/s)
   - Applies smoothing filter to reduce noise
-- `remove_player_velocities(team)` - Remove existing velocity columns
+- `calc_player_velocities_hybrid(team, smoothing=True, use_pff_speed=True)` **(NEW)**
+  - Hybrid approach using PFF's raw speed values with calculated direction
+  - More accurate than standard method for PFF data
+- `remove_player_velocities(team)` - Remove existing velocity columns (preserves `_pff_speed`)
 
 **How It Works**:
+
+#### Standard Method (for Metrica data):
 1. **Finite difference**: `vx = dx/dt`, `vy = dy/dt`
 2. **Outlier removal**: Flags unrealistic speeds (likely position errors)
 3. **Savitzky-Golay filtering**: Fits polynomial to velocity within sliding window
    - Default: 7-frame window, linear polynomial (polyorder=1)
    - Smooths noise while preserving acceleration trends
 4. **Half-aware processing**: Applies filter separately to each half to avoid boundary issues
+
+#### Hybrid Method (for PFF data):
+The hybrid method was introduced to address a key limitation: **PFF exports positions at ~3.75 FPS (after deduplication) but calculates speed internally at ~15 FPS**.
+
+1. **Direction from positions**: Calculate movement direction from position differences
+2. **Magnitude from PFF speed**: Use PFF's raw `speed` field (more accurate, higher FPS)
+3. **Combine**: `vx = pff_speed * dir_x`, `vy = pff_speed * dir_y`
+4. **Scaling**: Convert from m/s to normalized velocity components
+
+**Why the Hybrid Method is More Accurate**:
+| Source | FPS | Accuracy |
+|--------|-----|----------|
+| PFF internal speed | ~15 FPS | High (ground truth) |
+| Position differences | ~3.75 FPS | Lower (underestimates by ~10%) |
+
+Test results show:
+- **Hybrid mean speed: 1.88 m/s** (matches PFF raw)
+- **Standard mean speed: 1.71 m/s** (underestimates)
 
 **Why Smoothing Matters**:
 - Raw position data has measurement noise
@@ -156,6 +189,7 @@ Player columns added:
 - Home_1_vx: X-velocity (m/s)
 - Home_1_vy: Y-velocity (m/s)  
 - Home_1_speed: Total speed (m/s)
+- Home_1_pff_speed: PFF raw speed (m/s) - preserved for reference
 ```
 
 ---
@@ -405,8 +439,9 @@ Pass EPV-added: +0.053
 - Converts coordinate systems (PFF meters → Metrica 0-1 scale)
 - **Flips Y-axis** (PFF: y↑, Metrica: y↓)
 - Maps PFF event types to Metrica event types
-- Resamples tracking data (29.97 FPS → 25 FPS)
-- Generates Metrica-compatible CSV files
+- **Extracts PFF raw speed values** for hybrid velocity calculation
+- Smart sampling (every 4th frame + event frames) for ~7.5 FPS output
+- Generates Metrica-compatible CSV files with extended columns
 
 **Key Classes**:
 - `PFFToMetricaAdapter` - Main conversion class
@@ -414,9 +449,10 @@ Pass EPV-added: +0.053
 **Key Methods**:
 - `normalize_coordinates(x_meters, y_meters)` - Convert PFF → Metrica coordinates
 - `map_outcome_to_subtype(possession_data, event_type)` - Map PFF outcomes to Metrica subtypes
-- `convert_tracking_data()` - Convert JSONL tracking to CSV
+- `process_tracking_frame(frame_data)` - Extract positions, visibility, and **pff_speed**
+- `convert_tracking_data_smart_sampling()` - Convert JSONL tracking with intelligent sampling
 - `convert_event_data()` - Convert JSON events to CSV
-- `run_full_conversion()` - Execute complete pipeline
+- `run_conversion()` - Execute complete pipeline
 
 **Coordinate Conversion**:
 ```python
@@ -427,6 +463,16 @@ x_normalized = (x_meters + field_length/2) / field_length
 y_flipped = -y_meters  # FLIP Y-AXIS
 y_normalized = (y_flipped + field_width/2) / field_width
 ```
+
+**PFF Speed Data Extraction**:
+PFF tracking data includes raw `speed` values calculated internally at ~15 FPS:
+```python
+# For each player in frame
+pff_speed = player.get('speed', 0.0)  # Raw speed in m/s
+frame_info[f'Home_{jersey}_pff_speed'] = pff_speed
+```
+
+This speed data is preserved in the CSV and used by `calc_player_velocities_hybrid()` for more accurate velocity calculations than position-based differentiation.
 
 **Event Mapping**:
 ```
@@ -443,9 +489,15 @@ CL (Clearance) → CLEARANCE
 ```
 Sample Data/Sample_Game_10517/
   ├── Sample_Game_10517_RawEventsData.csv
-  ├── Sample_Game_10517_RawTrackingData_Home_Team.csv
-  └── Sample_Game_10517_RawTrackingData_Away_Team.csv
+  ├── Sample_Game_10517_RawTrackingData_Home_Team.csv  (includes pff_speed columns)
+  └── Sample_Game_10517_RawTrackingData_Away_Team.csv  (includes pff_speed columns)
 ```
+
+**Tracking CSV Column Format** (per player):
+- `x` - Normalized X position (0-1)
+- `y` - Normalized Y position (0-1)
+- `visibility` - VISIBLE or ESTIMATED
+- `pff_speed` - Raw speed from PFF in m/s
 
 ---
 

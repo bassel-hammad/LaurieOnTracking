@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Generate Pitch Control Movie for Di María's Goal
+Generate Pitch Control Movie
 
-This script generates pitch control frames at 1-second intervals for the sequence
-leading up to Di María's goal in the World Cup Final, then compiles them into a movie.
+This script generates an animated movie showing pitch control evolution 
+during a specific sequence.
 
-The movie shows how space control evolves during the attacking sequence.
+Based on LaurieOnTracking's pitch control model.
+
+Usage:
+  - Run the script
+  - Enter game ID (e.g., 10517 for World Cup Final 2022)
+  - Enter sequence number to analyze
+  - Movie is saved to Metrica_Output folder
 """
 
 import sys
@@ -21,12 +27,11 @@ import Metrica_PitchControl as mpc
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from matplotlib.patches import Rectangle
 import pandas as pd
 
 print("=" * 70)
 print("PITCH CONTROL MOVIE GENERATOR")
-print("Di María's Goal - World Cup Final 2022")
+print("Visualizing spatial control evolution during a play")
 print("=" * 70)
 print()
 
@@ -34,14 +39,26 @@ print()
 # CONFIGURATION
 # =============================================================================
 DATADIR = 'Sample Data'
-game_id = 10517
 OUTPUT_DIR = 'Metrica_Output'
-MOVIE_FILENAME = 'dimaria_goal_pitch_control.mp4'
 
-# Time window configuration
-TIME_WINDOW_BEFORE_GOAL = 10  # seconds before the goal to start
-TIME_WINDOW_AFTER_GOAL = 2    # seconds after the goal to end
-USE_EVERY_FRAME = True        # Generate pitch control for EVERY tracking frame (not just 1 per second)
+# Get match ID from user
+game_id = input("Enter match ID (e.g., 10517): ").strip()
+if not game_id:
+    print("ERROR: Match ID is required!")
+    sys.exit(1)
+
+try:
+    game_id = int(game_id)
+except ValueError:
+    print("ERROR: Match ID must be a number!")
+    sys.exit(1)
+
+print(f"\nSelected match ID: {game_id}")
+print()
+
+# =============================================================================
+# LOAD DATA
+# =============================================================================
 
 print("Loading data...")
 # Read in the event data
@@ -62,91 +79,120 @@ tracking_home, tracking_away, events = mio.to_single_playing_direction(tracking_
 print(f"Data loaded: {len(events)} events, {len(tracking_home):,} tracking frames")
 print()
 
-# Calculate player velocities
-print("Calculating player velocities...")
-tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
-tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
-
-# Find Di María's goal (second goal)
-shots = events[events['Type']=='SHOT']
-goals = shots[shots['Subtype'].str.contains('GOAL', na=False)].copy()
-
-if len(goals) < 2:
-    print("ERROR: Di María's goal (second goal) not found in the data!")
-    sys.exit(1)
-
-dimaria_goal = goals.iloc[1]  # Second goal
-dimaria_goal_idx = goals.index[1]
-goal_frame = int(dimaria_goal['Start Frame'])
-goal_scorer = dimaria_goal.get('From', 'Ángel Di María')
-
-# Get actual goal time from tracking data using the frame number
-if goal_frame not in tracking_home.index:
-    print(f"ERROR: Goal frame {goal_frame} not found in tracking data!")
-    sys.exit(1)
-
-goal_time = tracking_home.loc[goal_frame, 'Time [s]']
-
-print(f"Found Di María's goal:")
-print(f"  Scorer: {goal_scorer}")
-print(f"  Event frame: {goal_frame}")
-print(f"  Actual time from tracking: {goal_time:.1f} seconds")
+# Check if PFF speed columns exist and use hybrid velocity calculation
+pff_speed_cols = [c for c in tracking_home.columns if c.endswith('_pff_speed')]
+if pff_speed_cols:
+    print("Calculating player velocities using HYBRID method (PFF speed + calculated direction)...")
+    tracking_home = mvel.calc_player_velocities_hybrid(tracking_home, smoothing=True, use_pff_speed=True)
+    tracking_away = mvel.calc_player_velocities_hybrid(tracking_away, smoothing=True, use_pff_speed=True)
+    print("  -> Using PFF's raw speed values (calculated at ~15 FPS) for more accurate velocities")
+else:
+    print("Calculating player velocities from position differences...")
+    tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
+    tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
 print()
 
-# Get pitch control model parameters
-params = mpc.default_model_params()
+# =============================================================================
+# SELECT SEQUENCE
+# =============================================================================
 
-# Find goalkeepers
+# Get sequence number from user
+available_sequences = events['Sequence'].dropna().unique()
+available_sequences = sorted([int(s) for s in available_sequences if not pd.isna(s)])
+print(f"Available sequences: {available_sequences}")
+sequence_input = input("Enter sequence number (e.g., 1): ").strip()
+
+if not sequence_input:
+    print("ERROR: Sequence number is required!")
+    sys.exit(1)
+
+try:
+    sequence_number = float(sequence_input)
+except ValueError:
+    print("ERROR: Sequence must be a number!")
+    sys.exit(1)
+
+# Filter events for this sequence
+sequence_events = events[events['Sequence'] == sequence_number].copy()
+
+if len(sequence_events) == 0:
+    print(f"ERROR: No events found for sequence {sequence_number}!")
+    sys.exit(1)
+
+# Get frame window from sequence events
+start_frame = int(sequence_events['Start Frame'].min())
+end_frame = int(sequence_events['End Frame'].max())
+
+# Get corresponding times from tracking data
+if start_frame in tracking_home.index and end_frame in tracking_home.index:
+    start_time = tracking_home.loc[start_frame, 'Time [s]']
+    end_time = tracking_home.loc[end_frame, 'Time [s]']
+else:
+    # Fallback to time-based if frames not found
+    start_time = sequence_events['Start Time [s]'].min()
+    end_time = sequence_events['End Time [s]'].max()
+    print("Warning: Using time-based lookup (frames not found in tracking data)")
+
+print(f"\nAnalyzing sequence {sequence_number}")
+print(f"  Events in sequence: {len(sequence_events)}")
+print(f"  Frame range: {start_frame} to {end_frame}")
+print(f"  Time window: {start_time:.1f}s to {end_time:.1f}s")
+print()
+
+# Show first few events
+print("First few events in this sequence:")
+print(sequence_events[['Team', 'Type', 'From', 'To', 'Start Frame', 'Start Time [s]']].head(10).to_string(index=False))
+print()
+
+# Determine which team is attacking in this sequence (majority of events)
+team_counts = sequence_events['Team'].value_counts()
+attacking_team = team_counts.idxmax()
+print(f"Detected attacking team: {attacking_team}")
+print()
+
+# =============================================================================
+# SETUP FOR PITCH CONTROL
+# =============================================================================
+
+params = mpc.default_model_params()
 GK_numbers = [mio.find_goalkeeper(tracking_home), mio.find_goalkeeper(tracking_away)]
 print(f"Goalkeepers: Home #{GK_numbers[0]}, Away #{GK_numbers[1]}")
 print()
 
+# Movie filename based on game and sequence
+MOVIE_FILENAME = f"pitch_control_game{game_id}_seq{int(sequence_number)}.mp4"
+
 # =============================================================================
-# GENERATE PITCH CONTROL FRAMES
+# GET FRAMES TO ANALYZE
 # =============================================================================
 
-# Calculate time range
-start_time = max(0, goal_time - TIME_WINDOW_BEFORE_GOAL)
-end_time = goal_time + TIME_WINDOW_AFTER_GOAL
+# Get all frames in the sequence
+sequence_tracking = tracking_home[(tracking_home.index >= start_frame) & 
+                                   (tracking_home.index <= end_frame)]
 
-print(f"Generating pitch control frames from {start_time:.1f}s to {end_time:.1f}s")
+print(f"Total frames in sequence: {len(sequence_tracking)}")
 
-# Subsample frames to 5 FPS for pitch control generation
+# Subsample to target FPS (tracking is ~4 FPS, target 5 FPS for smooth movie)
 TARGET_FPS = 5
-frame_times = tracking_home['Time [s]'].values
-time_mask = (frame_times >= start_time) & (frame_times <= end_time)
-all_frames_in_window = tracking_home.index[time_mask].tolist()
+tracking_fps = 1.0 / (sequence_tracking['Time [s]'].diff().median())
+print(f"Tracking data FPS: {tracking_fps:.2f}")
 
-# Sample frames at 5 FPS intervals
-time_interval = 1.0 / TARGET_FPS  # 0.2 seconds between frames
-sample_times = np.arange(start_time, end_time + time_interval/2, time_interval)
-
-print(f"Found {len(all_frames_in_window)} tracking frames in time window")
-print(f"Subsampling to {TARGET_FPS} FPS: {len(sample_times)} frames")
-print()
-
-# Prepare frames to analyze
+# Use every frame since tracking is already ~4 FPS
 frames_to_analyze = []
-
-for sample_time in sample_times:
-    # Find closest frame to this sample time
-    time_diffs = np.abs(frame_times - sample_time)
-    closest_idx = np.argmin(time_diffs)
-    frame = tracking_home.index[closest_idx]
-    
-    if frame not in tracking_away.index:
-        continue
-    
-    actual_time = tracking_home.loc[frame, 'Time [s]']
+for frame_idx in sequence_tracking.index:
+    time_val = sequence_tracking.loc[frame_idx, 'Time [s]']
     frames_to_analyze.append({
-        'frame': frame,
-        'actual_time': actual_time
+        'frame': frame_idx,
+        'actual_time': time_val
     })
 
-print(f"Found {len(frames_to_analyze)} valid frames to analyze")
+print(f"Frames to analyze: {len(frames_to_analyze)}")
 print()
 
-# Generate pitch control for each frame
+# =============================================================================
+# GENERATE PITCH CONTROL SURFACES
+# =============================================================================
+
 print("Generating pitch control surfaces...")
 pitch_control_data = []
 
@@ -161,14 +207,9 @@ for i, frame_info in enumerate(frames_to_analyze):
         home_row = tracking_home.loc[frame]
         away_row = tracking_away.loc[frame]
         
-        # Determine which team is attacking (assume Home = Argentina scored)
-        pass_team = 'Home'  # Di María played for Argentina (Home)
         ball_pos = np.array([home_row['ball_x'], home_row['ball_y']])
         
         # Generate pitch control surface
-        # We need to create pitch control similar to generate_pitch_control_for_event
-        # but for an arbitrary frame
-        
         field_dimen = (106., 68.)
         n_grid_cells_x = 50
         n_grid_cells_y = int(n_grid_cells_x * field_dimen[1] / field_dimen[0])
@@ -185,7 +226,7 @@ for i, frame_info in enumerate(frames_to_analyze):
         home_row_backfilled = mpc._row_with_backfilled_velocities(tracking_home, frame)
         away_row_backfilled = mpc._row_with_backfilled_velocities(tracking_away, frame)
         
-        if pass_team == 'Home':
+        if attacking_team == 'Home':
             attacking_players = mpc.initialise_players(home_row_backfilled, 'Home', params, GK_numbers[0], is_attacking=True)
             defending_players = mpc.initialise_players(away_row_backfilled, 'Away', params, GK_numbers[1], is_attacking=False)
         else:
@@ -291,14 +332,7 @@ def animate(frame_idx):
     ax.plot(ball_pos[0], ball_pos[1], 'ko', markersize=8, alpha=1.0, linewidth=0, zorder=10)
     
     # Update time text
-    time_relative = data['time'] - goal_time
-    if time_relative < 0:
-        time_str = f"Time: {data['time']:.1f}s ({time_relative:.1f}s before goal)"
-    elif time_relative == 0:
-        time_str = f"Time: {data['time']:.1f}s (GOAL!)"
-    else:
-        time_str = f"Time: {data['time']:.1f}s (+{time_relative:.1f}s after goal)"
-    
+    time_str = f"Time: {data['time']:.1f}s | Sequence {int(sequence_number)}"
     time_text.set_text(time_str)
     
     return [pitch_control_plot, time_text]
@@ -315,7 +349,7 @@ anim = animation.FuncAnimation(
 )
 
 # Add title
-fig.suptitle(f"Pitch Control Evolution: {goal_scorer}'s Goal", fontsize=16, y=0.98)
+fig.suptitle(f"Pitch Control: Game {game_id} - Sequence {int(sequence_number)} ({attacking_team} attacking)", fontsize=16, y=0.98)
 
 # Add colorbar
 cbar = plt.colorbar(
@@ -325,14 +359,18 @@ cbar = plt.colorbar(
     pad=0.05,
     shrink=0.8
 )
-cbar.set_label('Pitch Control Probability (Red=Home/Argentina, Blue=Away/France)', fontsize=10)
+cbar.set_label(f'Pitch Control Probability (Red=Home, Blue=Away)', fontsize=10)
 
 # Save animation
 print(f"  Saving movie to: {output_path}")
 print(f"  Note: This may take a while with {len(pitch_control_data)} frames...")
 
-# Use 5 FPS for movie playback
-movie_fps = 5
+# Calculate FPS to match real-time playback
+# Video duration should equal game time duration
+game_duration = end_time - start_time
+num_frames = len(pitch_control_data)
+movie_fps = num_frames / game_duration if game_duration > 0 else 5
+print(f"  Game duration: {game_duration:.1f}s, Frames: {num_frames}, Playback FPS: {movie_fps:.1f}")
 
 writer = animation.FFMpegWriter(
     fps=movie_fps,
@@ -353,8 +391,8 @@ try:
     print(f"Resolution: 1800x1200 (150 DPI)")
     print()
     print("The movie shows:")
-    print("  - Red areas = Home team (Argentina) controls space")
-    print("  - Blue areas = Away team (France) controls space")
+    print("  - Red areas = Home team controls space")
+    print("  - Blue areas = Away team controls space")
     print("  - Red dots = Home players")
     print("  - Blue dots = Away players")
     print("  - Black dot = Ball")

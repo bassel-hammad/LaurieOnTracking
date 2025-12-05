@@ -62,9 +62,17 @@ print(f"Data loaded: {len(events)} events, {len(tracking_home):,} tracking frame
 print()
 
 # Calculate player velocities
-print("Calculating player velocities...")
-tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
-tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
+# Check if PFF speed columns exist for hybrid velocity calculation
+pff_speed_cols = [c for c in tracking_home.columns if c.endswith('_pff_speed')]
+if pff_speed_cols:
+    print("Calculating player velocities using HYBRID method (PFF speed + calculated direction)...")
+    print("  -> Using PFF's raw speed values (calculated at ~15 FPS) for more accurate velocities")
+    tracking_home = mvel.calc_player_velocities_hybrid(tracking_home, smoothing=True, use_pff_speed=True)
+    tracking_away = mvel.calc_player_velocities_hybrid(tracking_away, smoothing=True, use_pff_speed=True)
+else:
+    print("Calculating player velocities from position differences...")
+    tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
+    tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
 
 print(">>> PITCH CONTROL ANALYSIS FOR WORLD CUP GOALS <<<")
 print()
