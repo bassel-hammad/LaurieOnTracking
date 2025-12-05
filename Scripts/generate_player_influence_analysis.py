@@ -229,8 +229,23 @@ print()
 # PITCH CONTROL CALCULATION FUNCTION
 # =============================================================================
 
-def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers):
-    """Calculate pitch control surface for given player positions"""
+def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers, attacking_half_only=True, attacking_team='Home'):
+    """
+    Calculate pitch control surface for given player positions
+    
+    Parameters:
+    -----------
+    home_row, away_row : Series
+        Player position data for both teams
+    params : dict
+        Pitch control model parameters
+    GK_numbers : list
+        Goalkeeper jersey numbers [home_GK, away_GK]
+    attacking_half_only : bool
+        If True, only calculate PC in the attacking half (x > 0)
+    attacking_team : str
+        'Home' or 'Away' - determines which half is the attacking half
+    """
     
     ball_pos = np.array([home_row['ball_x'], home_row['ball_y']])
     
@@ -253,6 +268,22 @@ def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers):
     for ii in range(len(ygrid)):
         for jj in range(len(xgrid)):
             target_position = np.array([xgrid[jj], ygrid[ii]])
+            
+            # Only calculate in attacking half if flag is set
+            if attacking_half_only:
+                # Home team attacks towards positive x (right side)
+                # Away team attacks towards negative x (left side)
+                if attacking_team == 'Home' and target_position[0] < 0:
+                    # Skip defensive half for Home team
+                    PPCFa[ii, jj] = np.nan
+                    PPCFd[ii, jj] = np.nan
+                    continue
+                elif attacking_team == 'Away' and target_position[0] > 0:
+                    # Skip defensive half for Away team
+                    PPCFa[ii, jj] = np.nan
+                    PPCFd[ii, jj] = np.nan
+                    continue
+            
             PPCFa[ii, jj], PPCFd[ii, jj] = mpc.calculate_pitch_control_at_target(
                 target_position, attacking_players, defending_players, ball_pos, params
             )
@@ -266,6 +297,9 @@ def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers):
 print("=" * 70)
 print("CALCULATING PLAYER INFLUENCES")
 print("=" * 70)
+print()
+print(f"NOTE: Only calculating pitch control changes in the ATTACKING HALF")
+print(f"      (the half where {default_attacking_team} team is attacking)")
 print()
 
 # Store results
@@ -294,13 +328,16 @@ for i in range(len(frames_to_analyze) - 1):
     away_t1_backfilled = mpc._row_with_backfilled_velocities(tracking_away, frame_t1)
     
     # 1. Baseline: PC at time t (all players at t)
+    # Only calculate in attacking half of the team controlling the ball
     PC_baseline, xgrid, ygrid = calculate_pitch_control_surface(
-        home_t_backfilled, away_t_backfilled, params, GK_numbers
+        home_t_backfilled, away_t_backfilled, params, GK_numbers,
+        attacking_half_only=True, attacking_team=default_attacking_team
     )
     
     # 2. Actual: PC at time t+1 (all players moved)
     PC_actual, _, _ = calculate_pitch_control_surface(
-        home_t1_backfilled, away_t1_backfilled, params, GK_numbers
+        home_t1_backfilled, away_t1_backfilled, params, GK_numbers,
+        attacking_half_only=True, attacking_team=default_attacking_team
     )
     
     ΔPC_actual = PC_actual - PC_baseline
@@ -356,11 +393,13 @@ for i in range(len(frames_to_analyze) - 1):
         # Calculate PC with only this player moved (team order matters for pitch control)
         if attacking_team == 'Home':
             PC_only_this_player, _, _ = calculate_pitch_control_surface(
-                attack_hybrid, defend_t_backfilled, params, GK_numbers
+                attack_hybrid, defend_t_backfilled, params, GK_numbers,
+                attacking_half_only=True, attacking_team=default_attacking_team
             )
         else:  # Away team attacking
             PC_only_this_player, _, _ = calculate_pitch_control_surface(
-                defend_t_backfilled, attack_hybrid, params, GK_numbers
+                defend_t_backfilled, attack_hybrid, params, GK_numbers,
+                attacking_half_only=True, attacking_team=default_attacking_team
             )
             # For away team, invert the pitch control (1 - PPCF)
             PC_only_this_player = 1 - PC_only_this_player
@@ -372,19 +411,19 @@ for i in range(len(frames_to_analyze) - 1):
         else:
             ΔPC_this_player = PC_only_this_player - PC_baseline_away
         
-        # Store influence
+        # Store influence (use nansum to handle NaN values in defensive half)
         player_influences[player_id] = {
             'delta_PC': ΔPC_this_player,
-            'total_influence': np.sum(np.abs(ΔPC_this_player)),
-            'positive_influence': np.sum(ΔPC_this_player[ΔPC_this_player > 0]),
-            'negative_influence': np.sum(ΔPC_this_player[ΔPC_this_player < 0]),
+            'total_influence': np.nansum(np.abs(ΔPC_this_player)),
+            'positive_influence': np.nansum(np.where(ΔPC_this_player > 0, ΔPC_this_player, 0)),
+            'negative_influence': np.nansum(np.where(ΔPC_this_player < 0, ΔPC_this_player, 0)),
             'position_t': (attack_t[f'{player_id}_x'], attack_t[f'{player_id}_y']),
             'position_t1': (attack_t1[f'{player_id}_x'], attack_t1[f'{player_id}_y']),
         }
     
-    # 5. Calculate sum of attributions
+    # 5. Calculate sum of attributions (use nansum for NaN-safe calculation)
     if len(player_influences) > 0:
-        ΔPC_sum = np.sum([p['delta_PC'] for p in player_influences.values()], axis=0)
+        ΔPC_sum = np.nansum([p['delta_PC'] for p in player_influences.values()], axis=0)
     else:
         ΔPC_sum = np.zeros_like(PC_baseline)
     
@@ -518,12 +557,12 @@ print()
 print(f"Total players analyzed: {len(sorted_by_net)}")
 print()
 
-# Interaction analysis
-total_interaction = np.sum([np.sum(np.abs(r['interaction'])) for r in influence_results])
-total_actual_change = np.sum([np.sum(np.abs(r['ΔPC_actual'])) for r in influence_results])
+# Interaction analysis (use nansum for NaN-safe calculation)
+total_interaction = np.nansum([np.nansum(np.abs(r['interaction'])) for r in influence_results])
+total_actual_change = np.nansum([np.nansum(np.abs(r['ΔPC_actual'])) for r in influence_results])
 interaction_percentage = (total_interaction / total_actual_change * 100) if total_actual_change > 0 else 0
 
-print(f"Total actual ΔPC:        {total_actual_change:.3f}")
+print(f"Total actual ΔPC (attacking half only): {total_actual_change:.3f}")
 print(f"Total interaction term:  {total_interaction:.3f}")
 print(f"Interaction percentage:  {interaction_percentage:.1f}%")
 print()
