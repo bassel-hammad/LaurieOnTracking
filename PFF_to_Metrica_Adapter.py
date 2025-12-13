@@ -17,6 +17,7 @@ import os
 from datetime import datetime
 
 class PFFToMetricaAdapter:
+    
     def __init__(self, pff_data_dir, output_dir, game_id="10517"):
         """
         Initialize PFF to Metrica adapter
@@ -365,8 +366,8 @@ class PFFToMetricaAdapter:
         """
         Extract player name -> jersey number mapping from PFF tracking data.
         
-        The tracking data's game_event contains shirt_number and player_name,
-        which provides the name -> jersey mapping.
+        Extracts from both player arrays (homePlayers/awayPlayers) and game_event
+        to get complete player roster including those not involved in events.
         
         Parameters:
         -----------
@@ -384,6 +385,19 @@ class PFFToMetricaAdapter:
                 try:
                     frame = json.loads(line.strip())
                     
+                    # Extract from homePlayers and awayPlayers arrays
+                    for player_list in [frame.get('homePlayers', []), frame.get('awayPlayers', [])]:
+                        for player in player_list:
+                            jersey = player.get('jerseyNumber')
+                            name_obj = player.get('name', {})
+                            first = name_obj.get('first', '')
+                            last = name_obj.get('last', '')
+                            full_name = f"{first} {last}".strip()
+                            
+                            if jersey and full_name and full_name not in name_to_jersey:
+                                name_to_jersey[full_name] = str(jersey)
+                    
+                    # Also check game_event for additional names
                     if 'game_event' in frame and frame['game_event']:
                         ge = frame['game_event']
                         shirt = ge.get('shirt_number')
@@ -452,82 +466,7 @@ class PFFToMetricaAdapter:
             'player_id_to_jersey': player_id_to_jersey
         }
 
-    def build_complete_player_mapping(self):
-        """
-        Build complete player name mapping from all available sources.
-        
-        Uses a two-step approach:
-        1. Event data: Reliable source for player name -> team mapping
-        2. Tracking data: Reliable source for player name -> jersey number mapping
-        
-        Combines both to create: team -> {jersey: name}
-        
-        Saves the mapping to a JSON file for later use.
-        """
-        print(" Building player name mapping...")
-        
-        # Load metadata for team info
-        meta_file = os.path.join(self.pff_data_dir, 'Meta Data', f'{self.game_id}.json')
-        with open(meta_file, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
-        
-        if metadata:
-            meta = metadata[0] if isinstance(metadata, list) else metadata
-            self.team_info = {
-                'Home': {
-                    'id': meta.get('homeTeam', {}).get('id'),
-                    'name': meta.get('homeTeam', {}).get('name'),
-                    'shortName': meta.get('homeTeam', {}).get('shortName')
-                },
-                'Away': {
-                    'id': meta.get('awayTeam', {}).get('id'),
-                    'name': meta.get('awayTeam', {}).get('name'),
-                    'shortName': meta.get('awayTeam', {}).get('shortName')
-                }
-            }
-        
-        # Step 1: Get player name -> team mapping from event data (most reliable for team)
-        events_file = os.path.join(self.pff_data_dir, 'Event Data', f'{self.game_id}.json')
-        player_team_map = self.extract_player_team_from_events(events_file)
-        
-        # Step 2: Get player name -> jersey number from tracking data
-        tracking_file = os.path.join(self.pff_data_dir, 'Tracking Data', f'{self.game_id}.jsonl')
-        name_to_jersey = self.extract_name_to_jersey_from_tracking(tracking_file)
-        
-        # Step 3: Combine to create team -> {jersey: name} mapping
-        self.player_names = {'Home': {}, 'Away': {}}
-        
-        for name, team in player_team_map.items():
-            jersey = name_to_jersey.get(name)
-            if jersey:
-                self.player_names[team][jersey] = name
-        
-        print(f"   Home team ({self.team_info['Home'].get('name', 'Unknown')}): {len(self.player_names['Home'])} players")
-        print(f"   Away team ({self.team_info['Away'].get('name', 'Unknown')}): {len(self.player_names['Away'])} players")
-        
-        # Save to JSON file
-        self.save_player_mapping()
-        
-        return self.player_names
 
-    def save_player_mapping(self):
-        """Save player name mapping to JSON file"""
-        output_game_dir = os.path.join(self.output_dir, f'Sample_Game_{self.game_id}')
-        os.makedirs(output_game_dir, exist_ok=True)
-        
-        mapping_file = os.path.join(output_game_dir, f'Sample_Game_{self.game_id}_PlayerMapping.json')
-        
-        mapping_data = {
-            'game_id': self.game_id,
-            'teams': self.team_info,
-            'players': self.player_names,
-            'player_id_to_jersey': getattr(self, 'player_id_to_jersey', {})
-        }
-        
-        with open(mapping_file, 'w', encoding='utf-8') as f:
-            json.dump(mapping_data, f, indent=2, ensure_ascii=False)
-        
-        print(f"   Saved player mapping to: {mapping_file}")
 
     def convert_events_data(self):
         """Convert PFF event data to Metrica format"""
@@ -1163,9 +1102,6 @@ class PFFToMetricaAdapter:
         print("=" * 60)
         
         try:
-            # Build player name mapping first
-            self.build_complete_player_mapping()
-            
             # Convert event data (without frame mapping)
             events_df = self.convert_events_data()
             

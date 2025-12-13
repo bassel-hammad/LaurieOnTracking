@@ -38,8 +38,10 @@ print()
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-DATADIR = 'Sample Data'
-OUTPUT_DIR = 'Metrica_Output'
+# Use absolute paths based on project root
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATADIR = os.path.join(_PROJECT_ROOT, 'Sample Data')
+OUTPUT_DIR = os.path.join(_PROJECT_ROOT, 'Metrica_Output')
 
 # Get match ID from user
 game_id = input("Enter match ID (e.g., 10517): ").strip()
@@ -151,6 +153,34 @@ print(f"Detected attacking team: {attacking_team}")
 print()
 
 # =============================================================================
+# IDENTIFY POSSESSION FRAMES
+# =============================================================================
+
+# Get all event frames in this sequence (frames where an event occurs)
+event_frames_list = []
+for _, event in sequence_events.iterrows():
+    start_f = event.get('Start Frame', None)
+    end_f = event.get('End Frame', None)
+    if pd.notna(start_f):
+        event_frames_list.append(int(start_f))
+    if pd.notna(end_f) and end_f != start_f:
+        event_frames_list.append(int(end_f))
+
+event_frames_list = sorted(set(event_frames_list))
+print(f"Found {len(event_frames_list)} frames with events in this sequence")
+print(f"Event frames: {event_frames_list[:20]}..." if len(event_frames_list) > 20 else f"Event frames: {event_frames_list}")
+
+def is_near_event_frame(frame, event_frames, tolerance=5):
+    """
+    Check if a frame is within tolerance of any event frame.
+    This handles cases where our sampled frames don't exactly match event frames.
+    """
+    for ef in event_frames:
+        if abs(frame - ef) <= tolerance:
+            return True
+    return False
+
+# =============================================================================
 # SETUP FOR PITCH CONTROL
 # =============================================================================
 
@@ -172,21 +202,36 @@ sequence_tracking = tracking_home[(tracking_home.index >= start_frame) &
 
 print(f"Total frames in sequence: {len(sequence_tracking)}")
 
-# Subsample to target FPS (tracking is ~4 FPS, target 5 FPS for smooth movie)
-TARGET_FPS = 5
-tracking_fps = 1.0 / (sequence_tracking['Time [s]'].diff().median())
-print(f"Tracking data FPS: {tracking_fps:.2f}")
+# Sample at fixed time intervals to ensure consistent playback speed
+TARGET_FPS = 5  # Frames per second for movie
+time_interval = 1.0 / TARGET_FPS  # Fixed time between frames (0.2s)
 
-# Use every frame since tracking is already ~4 FPS
+# Generate sample times at exact intervals
+sample_times = np.arange(start_time, end_time + time_interval/2, time_interval)
+print(f"Target FPS: {TARGET_FPS}, Time interval: {time_interval:.3f}s")
+print(f"Sample times: {len(sample_times)} frames at fixed intervals")
+
+# Find the closest tracking frame for each sample time (no duplicates)
+frame_times = tracking_home['Time [s]'].values
 frames_to_analyze = []
-for frame_idx in sequence_tracking.index:
-    time_val = sequence_tracking.loc[frame_idx, 'Time [s]']
-    frames_to_analyze.append({
-        'frame': frame_idx,
-        'actual_time': time_val
-    })
+last_frame = None
 
-print(f"Frames to analyze: {len(frames_to_analyze)}")
+for sample_time in sample_times:
+    # Find closest tracking frame to this sample time
+    time_diffs = np.abs(frame_times - sample_time)
+    closest_idx = np.argmin(time_diffs)
+    frame = tracking_home.index[closest_idx]
+    
+    # Skip if this frame was already added (prevents duplicates causing slowdown)
+    if frame != last_frame and frame in tracking_away.index:
+        actual_time = tracking_home.loc[frame, 'Time [s]']
+        frames_to_analyze.append({
+            'frame': frame,
+            'actual_time': actual_time
+        })
+        last_frame = frame
+
+print(f"Frames to analyze: {len(frames_to_analyze)} (duplicates removed)")
 print()
 
 # =============================================================================
@@ -195,12 +240,18 @@ print()
 
 print("Generating pitch control surfaces...")
 pitch_control_data = []
+ball_trajectory = []  # Store all ball positions for trajectory line
+ball_possession = []  # Store whether ball is in possession at each frame
 
 for i, frame_info in enumerate(frames_to_analyze):
     frame = frame_info['frame']
     actual_time = frame_info['actual_time']
     
-    print(f"  Frame {i+1}/{len(frames_to_analyze)}: t={actual_time:.1f}s (frame {frame})", end='')
+    # Check if this frame is near an event frame (ball in possession)
+    in_possession = is_near_event_frame(frame, event_frames_list, tolerance=5)
+    
+    print(f"  Frame {i+1}/{len(frames_to_analyze)}: t={actual_time:.1f}s (frame {frame})" + 
+          (" [EVENT]" if in_possession else ""), end='')
     
     try:
         # Get tracking data for this frame
@@ -241,10 +292,23 @@ for i, frame_info in enumerate(frames_to_analyze):
                     target_position, attacking_players, defending_players, ball_pos, params
                 )
         
+        # Convert to Home team's pitch control for consistent visualization
+        # PPCFa = attacking team's control, so:
+        # - If Home is attacking: Home control = PPCFa
+        # - If Away is attacking: Home control = PPCFd (or 1 - PPCFa)
+        if attacking_team == 'Home':
+            PPCF_home = PPCFa
+        else:
+            PPCF_home = PPCFd  # Home team is defending, so their control = PPCFd
+        
+        # Store ball position for trajectory
+        ball_trajectory.append(ball_pos.copy())
+        ball_possession.append(in_possession)
+        
         pitch_control_data.append({
             'frame': frame,
             'time': actual_time,
-            'PPCF': PPCFa,
+            'PPCF': PPCF_home,  # Always show Home team's control probability
             'xgrid': xgrid,
             'ygrid': ygrid,
             'home_row': home_row,
@@ -327,9 +391,39 @@ def animate(frame_idx):
     y_cols_away = [c for c in away_row.keys() if c[-2:].lower()=='_y' and c!='ball_y' and 'visibility' not in c.lower()]
     ax.plot(away_row[x_cols_away], away_row[y_cols_away], 'bo', markersize=10, alpha=0.7)
     
-    # Ball
-    ball_pos = data['ball_pos']
-    ax.plot(ball_pos[0], ball_pos[1], 'ko', markersize=8, alpha=1.0, linewidth=0, zorder=10)
+    # Draw ball trajectory: X markers for possession frames, lines between non-possession frames
+    if frame_idx > 0:
+        # Separate positions into possession and non-possession segments
+        possession_x = []
+        possession_y = []
+        
+        # Draw line segments only between consecutive non-possession frames
+        for i in range(frame_idx + 1):
+            if ball_possession[i]:
+                # This is a possession frame - mark with X
+                possession_x.append(ball_trajectory[i][0])
+                possession_y.append(ball_trajectory[i][1])
+            
+            # Draw line segment from previous frame if both are non-possession
+            if i > 0 and not ball_possession[i] and not ball_possession[i-1]:
+                ax.plot([ball_trajectory[i-1][0], ball_trajectory[i][0]], 
+                       [ball_trajectory[i-1][1], ball_trajectory[i][1]], 
+                       'k-', linewidth=2, alpha=0.7, zorder=9)
+        
+        # Plot all possession markers as X symbols
+        if possession_x:
+            ax.plot(possession_x, possession_y, 'kx', markersize=10, 
+                   markeredgewidth=2.5, alpha=0.9, zorder=9)
+    
+    # Also mark current frame with X if in possession
+    if frame_idx < len(ball_possession) and ball_possession[frame_idx]:
+        ball_pos = data['ball_pos']
+        ax.plot(ball_pos[0], ball_pos[1], 'kx', markersize=12, 
+               markeredgewidth=3, alpha=1.0, zorder=10)
+    else:
+        # Ball (current position) - regular dot for non-possession
+        ball_pos = data['ball_pos']
+        ax.plot(ball_pos[0], ball_pos[1], 'ko', markersize=8, alpha=1.0, linewidth=0, zorder=10)
     
     # Update time text
     time_str = f"Time: {data['time']:.1f}s | Sequence {int(sequence_number)}"
@@ -339,11 +433,16 @@ def animate(frame_idx):
 
 # Create animation
 print(f"  Generating animation with {len(pitch_control_data)} frames...")
+
+# Use fixed interval matching TARGET_FPS for consistent playback
+target_interval = int(1000 / TARGET_FPS)  # 200ms for 5 FPS
+print(f"  Using fixed interval: {target_interval}ms between frames ({TARGET_FPS} FPS)")
+
 anim = animation.FuncAnimation(
     fig, 
     animate, 
     frames=len(pitch_control_data),
-    interval=200,  # 200ms between frames (5 FPS)
+    interval=target_interval,  # Fixed interval for consistent playback
     blit=False,
     repeat=True
 )
@@ -359,18 +458,15 @@ cbar = plt.colorbar(
     pad=0.05,
     shrink=0.8
 )
-cbar.set_label(f'Pitch Control Probability (Red=Home, Blue=Away)', fontsize=10)
+cbar.set_label('Pitch Control: Red = Home Team | Blue = Away Team', fontsize=10)
 
 # Save animation
 print(f"  Saving movie to: {output_path}")
 print(f"  Note: This may take a while with {len(pitch_control_data)} frames...")
 
-# Calculate FPS to match real-time playback
-# Video duration should equal game time duration
-game_duration = end_time - start_time
-num_frames = len(pitch_control_data)
-movie_fps = num_frames / game_duration if game_duration > 0 else 5
-print(f"  Game duration: {game_duration:.1f}s, Frames: {num_frames}, Playback FPS: {movie_fps:.1f}")
+# Use fixed FPS for consistent playback
+movie_fps = TARGET_FPS
+print(f"  Encoding at {movie_fps} FPS for consistent playback")
 
 writer = animation.FFMpegWriter(
     fps=movie_fps,
