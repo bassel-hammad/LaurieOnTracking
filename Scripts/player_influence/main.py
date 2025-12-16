@@ -76,6 +76,23 @@ def get_sequence_input(data_loader):
     return sequence_number
 
 
+def get_analysis_mode():
+    """Get analysis mode from user."""
+    print("\nSelect analysis mode:")
+    print("  1. Attacking (analyze attackers)")
+    print("  2. Defending (analyze defenders)")
+    
+    mode_input = input("Enter your choice (1 or 2): ").strip()
+    
+    if mode_input == '1':
+        return 'attacking'
+    elif mode_input == '2':
+        return 'defending'
+    else:
+        print("ERROR: Invalid choice! Please enter 1 or 2.")
+        sys.exit(1)
+
+
 def analyze_sequence(data_loader, sequence_number):
     """Analyze a specific sequence."""
     # Get sequence events
@@ -111,12 +128,13 @@ def analyze_sequence(data_loader, sequence_number):
     return sequence_events, start_time, end_time, attacking_team, defending_team
 
 
-def run_influence_analysis(data_loader, sequence_events, attacking_team):
-    """Run the player influence analysis."""
+def run_influence_analysis(data_loader, sequence_events, attacking_team, defending_team, analysis_mode):
+    """Run the player influence analysis for selected mode."""
     print("=" * 70)
     print("CALCULATING PLAYER INFLUENCES")
     print("=" * 70)
     print()
+    print(f"Analysis mode: {analysis_mode.upper()}")
     print(f"NOTE: Only calculating pitch control in the ATTACKING HALF")
     print(f"      {attacking_team} attacks towards {'RIGHT (x > 0)' if attacking_team == 'Home' else 'LEFT (x < 0)'}")
     print()
@@ -134,9 +152,15 @@ def run_influence_analysis(data_loader, sequence_events, attacking_team):
     print(f"Goalkeepers: Home #{data_loader.gk_numbers[0]}, Away #{data_loader.gk_numbers[1]}")
     print()
     
-    # Create influence calculator and run analysis
-    influence_calc = InfluenceCalculator(data_loader, pc_calculator, attacking_team)
-    influence_calc.analyze_sequence(frames_to_analyze, verbose=True)
+    # Create influence calculator for the selected mode
+    if analysis_mode == 'attacking':
+        print("Analyzing ATTACKING players...")
+        influence_calc = InfluenceCalculator(data_loader, pc_calculator, attacking_team, analysis_mode='attacking')
+        influence_calc.analyze_sequence(frames_to_analyze, verbose=True)
+    else:  # defending
+        print("Analyzing DEFENDING players...")
+        influence_calc = InfluenceCalculator(data_loader, pc_calculator, attacking_team, analysis_mode='defending')
+        influence_calc.analyze_sequence(frames_to_analyze, verbose=True)
     
     # Print summary
     influence_calc.print_summary(data_loader)
@@ -144,8 +168,8 @@ def run_influence_analysis(data_loader, sequence_events, attacking_team):
     return influence_calc, pc_calculator
 
 
-def generate_movie(data_loader, influence_calc, sequence_number, start_time, end_time):
-    """Generate the visualization movie and correlation plot."""
+def generate_movie(data_loader, influence_calc, game_id, sequence_number, start_time, end_time):
+    """Generate the visualization movie."""
     print("=" * 70)
     print("GENERATING VISUALIZATIONS")
     print("=" * 70)
@@ -153,14 +177,6 @@ def generate_movie(data_loader, influence_calc, sequence_number, start_time, end
     
     # Create visualizer
     visualizer = Visualizer(data_loader, influence_calc)
-    
-    # Generate correlation plot first
-    print("Generating correlation plot...")
-    correlation_filename = f'sequence_{int(sequence_number)}_correlation.png'
-    correlation_path = Config.get_output_path(correlation_filename)
-    correlation = visualizer.generate_correlation_plot(sequence_number, save_path=correlation_path)
-    print(f"  Correlation coefficient: {correlation:.3f}")
-    print()
     
     # Get movie frames
     movie_frames = data_loader.get_movie_frames(start_time, end_time)
@@ -170,7 +186,7 @@ def generate_movie(data_loader, influence_calc, sequence_number, start_time, end
     print(f"  Found {len(movie_frames)} valid frames to render")
     print()
     
-    output_filename = Config.get_movie_filename(sequence_number)
+    output_filename = Config.get_movie_filename(game_id, sequence_number, influence_calc.analysis_mode)
     output_path = Config.get_output_path(output_filename)
     
     visualizer.generate_movie(movie_frames, output_path, sequence_number)
@@ -195,13 +211,16 @@ def main():
         data_loader, sequence_number
     )
     
+    # Get analysis mode from user
+    analysis_mode = get_analysis_mode()
+    
     # Run influence analysis
     influence_calc, pc_calculator = run_influence_analysis(
-        data_loader, sequence_events, attacking_team
+        data_loader, sequence_events, attacking_team, defending_team, analysis_mode
     )
     
     # Generate movie
-    generate_movie(data_loader, influence_calc, sequence_number, start_time, end_time)
+    generate_movie(data_loader, influence_calc, game_id, sequence_number, start_time, end_time)
     
     print("=" * 70)
     print("ANALYSIS COMPLETE!")

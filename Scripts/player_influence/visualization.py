@@ -60,6 +60,9 @@ class Visualizer:
         time_diffs = []
         event_indices = []
         
+        # Determine analysis mode
+        analysis_mode = self.influence_calc.analysis_mode
+        
         for event_idx, result in enumerate(self.influence_calc.influence_results):
             time_t = result['time_t']
             time_t1 = result['time_t1']
@@ -69,11 +72,17 @@ class Visualizer:
                 name = self.data_loader.get_player_display_name(player_id)
                 player_names.append(name)
                 
-                pos = influence_data.get('positive_additive', influence_data.get('positive_influence', 0))
-                neg = influence_data.get('negative_additive', influence_data.get('negative_influence', 0))
-                net = pos + neg
+                if analysis_mode == 'attacking':
+                    # For attacking mode: use additive approach
+                    pos = influence_data.get('positive_additive', influence_data.get('positive_influence', 0))
+                    neg = influence_data.get('negative_additive', influence_data.get('negative_influence', 0))
+                    net = pos + neg
+                    positive_vals.append(pos)
+                else:
+                    # For defending mode: use necessity approach
+                    net = influence_data.get('net_necessity', 0)
+                    positive_vals.append(net)  # Use net as "positive" for correlation
                 
-                positive_vals.append(pos)
                 net_vals.append(net)
                 time_diffs.append(delta_t)
                 event_indices.append(event_idx)
@@ -130,14 +139,20 @@ class Visualizer:
             ax.plot(x_line, p(x_line), 'r-', alpha=0.7, linewidth=2,
                    label=f'Regression (r = {correlation:.3f})', zorder=2)
         
-        # Formatting
-        ax.set_xlabel('Positive Influence', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Net Influence', fontsize=12, fontweight='bold')
+        # Formatting based on mode
+        if analysis_mode == 'attacking':
+            ax.set_xlabel('Positive Influence', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Net Influence', fontsize=12, fontweight='bold')
+            plot_title = 'Correlation: Positive vs Net Influence'
+        else:
+            ax.set_xlabel('Net Influence (Necessity)', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Net Influence', fontsize=12, fontweight='bold')
+            plot_title = 'Net Influence Distribution (Defending)'
         
         num_events = len(self.influence_calc.influence_results)
         num_points = len(positive_vals)
-        title = f'Correlation: Positive vs Net Influence\n'
-        title += f'Sequence {int(sequence_number)} | {num_events} Intervals | {num_points} Player-Interval Points'
+        title = f'{plot_title}\n'
+        title += f'Sequence {int(sequence_number)} | {num_events} Intervals | {num_points} Player-Interval Points | Mode: {analysis_mode.upper()}'
         ax.set_title(title, fontsize=13, fontweight='bold')
         
         ax.axhline(y=0, color='gray', linewidth=0.5, linestyle='-', alpha=0.5)
@@ -146,27 +161,32 @@ class Visualizer:
         ax.grid(True, alpha=0.3)
         
         # Add correlation annotation
-        stats_text = f'Pearson r = {correlation:.3f}\n'
-        stats_text += f'Δt = {np.mean(time_diffs):.2f}s (fixed interval)'
+        if analysis_mode == 'attacking':
+            stats_text = f'Pearson r = {correlation:.3f}\n'
+            stats_text += f'Δt = {np.mean(time_diffs):.2f}s (fixed interval)'
+        else:
+            stats_text = f'Mean influence = {np.mean(net_vals):.3f}\n'
+            stats_text += f'Δt = {np.mean(time_diffs):.2f}s (fixed interval)'
         
         ax.text(0.05, 0.95, stats_text, 
                transform=ax.transAxes, fontsize=10, fontweight='bold',
                verticalalignment='top', 
                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
         
-        # Add interpretation text
-        if correlation > 0.9:
-            interp = "Very strong correlation - approaches agree closely"
-        elif correlation > 0.7:
-            interp = "Strong correlation - approaches mostly agree"
-        elif correlation > 0.5:
-            interp = "Moderate correlation - some differences"
-        else:
-            interp = "Weak correlation - approaches give different insights"
-        
-        ax.text(0.05, 0.80, interp, transform=ax.transAxes, fontsize=9,
-               verticalalignment='top', style='italic',
-               bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+        # Add interpretation text (only for attacking mode with correlation)
+        if analysis_mode == 'attacking':
+            if correlation > 0.9:
+                interp = "Very strong correlation - approaches agree closely"
+            elif correlation > 0.7:
+                interp = "Strong correlation - approaches mostly agree"
+            elif correlation > 0.5:
+                interp = "Moderate correlation - some differences"
+            else:
+                interp = "Weak correlation - approaches give different insights"
+            
+            ax.text(0.05, 0.80, interp, transform=ax.transAxes, fontsize=9,
+                   verticalalignment='top', style='italic',
+                   bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
         
         plt.tight_layout()
         
@@ -309,82 +329,150 @@ class Visualizer:
         return pitch_control_data
     
     def _prepare_bar_chart_data(self):
-        """Prepare data for bar charts - Positive, Total, and Net influence."""
-        # Get sorted attackers for each metric
-        sorted_by_positive = self.influence_calc.get_sorted_attackers(by='positive_additive', reverse=True)
-        sorted_by_net = self.influence_calc.get_sorted_attackers(by='net_additive', reverse=True)
+        """Prepare data for bar charts based on analysis mode."""
+        analysis_mode = self.influence_calc.analysis_mode
         
-        # Calculate total (absolute) = positive + |negative|
-        attackers_with_total = []
-        for player_id, stats in self.influence_calc.attacker_influences.items():
-            pos = stats.get('positive_additive', stats.get('positive_influence', 0))
-            neg = stats.get('negative_additive', stats.get('negative_influence', 0))
-            total = pos + abs(neg)
-            attackers_with_total.append((player_id, total, stats))
-        sorted_by_total = sorted(attackers_with_total, key=lambda x: x[1], reverse=True)
-        
-        # Prepare data for each metric
-        # Positive influence
-        positive_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_by_positive]
-        positive_ids = [p[0] for p in sorted_by_positive]
-        positive_vals = [p[1].get('positive_additive', p[1].get('positive_influence', 0)) for p in sorted_by_positive]
-        positive_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_positive, 1)}
-        top5_positive_ids = [p[0] for p in sorted_by_positive[:5]]
-        
-        # Total influence (positive + |negative|)
-        total_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_by_total]
-        total_ids = [p[0] for p in sorted_by_total]
-        total_vals = [p[1] for p in sorted_by_total]
-        total_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_total, 1)}
-        top5_total_ids = [p[0] for p in sorted_by_total[:5]]
-        
-        # Net influence (positive + negative, can be positive or negative)
-        net_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_by_net]
-        net_ids = [p[0] for p in sorted_by_net]
-        net_vals = [p[1].get('net_additive', p[1].get('net', 0)) for p in sorted_by_net]
-        net_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_net, 1)}
-        top5_net_ids = [p[0] for p in sorted_by_net[:5]]
+        if analysis_mode == 'attacking':
+            # Get sorted attackers for each metric
+            sorted_by_positive = self.influence_calc.get_sorted_attackers(by='positive_additive', reverse=True)
+            sorted_by_net = self.influence_calc.get_sorted_attackers(by='net_additive', reverse=True)
+            
+            # Calculate total (absolute) = positive + |negative|
+            attackers_with_total = []
+            for player_id, stats in self.influence_calc.attacker_influences.items():
+                pos = stats.get('positive_additive', stats.get('positive_influence', 0))
+                neg = stats.get('negative_additive', stats.get('negative_influence', 0))
+                total = pos + abs(neg)
+                attackers_with_total.append((player_id, total, stats))
+            sorted_by_total = sorted(attackers_with_total, key=lambda x: x[1], reverse=True)
+            
+            # Prepare data for each metric
+            # Positive influence
+            positive_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_by_positive]
+            positive_ids = [p[0] for p in sorted_by_positive]
+            positive_vals = [p[1].get('positive_additive', p[1].get('positive_influence', 0)) for p in sorted_by_positive]
+            positive_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_positive, 1)}
+            top5_positive_ids = [p[0] for p in sorted_by_positive[:5]]
+            
+            # Total influence (positive + |negative|)
+            total_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_by_total]
+            total_ids = [p[0] for p in sorted_by_total]
+            total_vals = [p[1] for p in sorted_by_total]
+            total_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_total, 1)}
+            top5_total_ids = [p[0] for p in sorted_by_total[:5]]
+            
+            # Net influence (positive + negative, can be positive or negative)
+            net_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_by_net]
+            net_ids = [p[0] for p in sorted_by_net]
+            net_vals = [p[1].get('net_additive', p[1].get('net', 0)) for p in sorted_by_net]
+            net_rankings = {p[0]: rank for rank, p in enumerate(sorted_by_net, 1)}
+            top5_net_ids = [p[0] for p in sorted_by_net[:5]]
+            
+            # No defender data in attacking mode
+            defender_names = []
+            defender_ids = []
+            defender_vals = []
+            defender_rankings = {}
+            top5_defender_ids = []
+        else:
+            # Defending mode - use defender data
+            sorted_defenders = self.influence_calc.get_sorted_players(reverse=True)
+            
+            # Populate defender data
+            defender_names = [self.data_loader.get_player_display_name(p[0]) for p in sorted_defenders]
+            defender_ids = [p[0] for p in sorted_defenders]
+            defender_vals = [p[1].get('net_necessity', 0) for p in sorted_defenders]
+            defender_rankings = {p[0]: rank for rank, p in enumerate(sorted_defenders, 1)}
+            top5_defender_ids = [p[0] for p in sorted_defenders[:5]]
+            
+            # No attacker data in defending mode
+            positive_names = []
+            positive_ids = []
+            positive_vals = []
+            positive_rankings = {}
+            top5_positive_ids = []
+            
+            total_names = []
+            total_ids = []
+            total_vals = []
+            total_rankings = {}
+            top5_total_ids = []
+            
+            net_names = []
+            net_ids = []
+            net_vals = []
+            net_rankings = {}
+            top5_net_ids = []
         
         # Event colors
         num_events = len(self.influence_calc.influence_results)
         event_colors = cm.rainbow(np.linspace(0, 1, num_events))
         
         return {
-            # Positive influence
+            # Attackers - Positive influence
             'positive_names': positive_names,
             'positive_ids': positive_ids,
             'positive_vals': positive_vals,
             'positive_rankings': positive_rankings,
             'top5_positive_ids': top5_positive_ids,
             
-            # Total influence
+            # Attackers - Total influence
             'total_names': total_names,
             'total_ids': total_ids,
             'total_vals': total_vals,
             'total_rankings': total_rankings,
             'top5_total_ids': top5_total_ids,
             
-            # Net influence
+            # Attackers - Net influence
             'net_names': net_names,
             'net_ids': net_ids,
             'net_vals': net_vals,
             'net_rankings': net_rankings,
             'top5_net_ids': top5_net_ids,
             
+            # Defenders
+            'defender_names': defender_names,
+            'defender_ids': defender_ids,
+            'defender_vals': defender_vals,
+            'defender_rankings': defender_rankings,
+            'top5_defender_ids': top5_defender_ids,
+            
             'event_colors': event_colors,
         }
     
     def _setup_figure(self):
-        """Set up the figure with 1 pitch and 1 bar chart (Net Influence only)."""
-        self.fig = plt.figure(figsize=Config.FIGURE_SIZE)
-        gs = self.fig.add_gridspec(1, 2, width_ratios=[2, 1], hspace=0.3, wspace=0.3)
+        """Set up the figure with 1 pitch and bar chart(s) based on available data."""
+        # Check what data is available
+        has_attackers = bool(self.influence_calc.attacker_influences)
+        has_defenders = bool(self.influence_calc.defender_influences)
         
-        # Pitch (left side)
-        self.ax_pitch = self.fig.add_subplot(gs[0, 0])
-        self._draw_pitch_on_ax(self.ax_pitch)
-        
-        # Bar chart (right side) - net influence only
-        self.ax_bar_net = self.fig.add_subplot(gs[0, 1])
+        if has_attackers and has_defenders:
+            # Both teams analyzed - show 2 bar charts
+            self.fig = plt.figure(figsize=Config.FIGURE_SIZE)
+            gs = self.fig.add_gridspec(1, 3, width_ratios=[2, 1, 1], hspace=0.3, wspace=0.4)
+            
+            # Pitch (left side)
+            self.ax_pitch = self.fig.add_subplot(gs[0, 0])
+            self._draw_pitch_on_ax(self.ax_pitch)
+            
+            # Bar chart for attackers (middle)
+            self.ax_bar_attackers = self.fig.add_subplot(gs[0, 1])
+            
+            # Bar chart for defenders (right side)
+            self.ax_bar_defenders = self.fig.add_subplot(gs[0, 2])
+        else:
+            # Only one team analyzed - show 1 bar chart
+            self.fig = plt.figure(figsize=Config.FIGURE_SIZE)
+            gs = self.fig.add_gridspec(1, 2, width_ratios=[2, 1], hspace=0.3, wspace=0.3)
+            
+            # Pitch (left side)
+            self.ax_pitch = self.fig.add_subplot(gs[0, 0])
+            self._draw_pitch_on_ax(self.ax_pitch)
+            
+            # Single bar chart (right side) - use universal ax_bar
+            self.ax_bar = self.fig.add_subplot(gs[0, 1])
+            self.ax_bar_attackers = None
+            self.ax_bar_defenders = None
         
         # Time text
         self.time_text = self.ax_pitch.text(
@@ -441,7 +529,7 @@ class Visualizer:
         self._draw_pitch_on_ax(self.ax_pitch)
     
     def _animate_frame(self, frame_idx, pitch_control_data, bar_data):
-        """Animate a single frame - updates 1 pitch and 1 bar chart (Net Influence)."""
+        """Animate a single frame - updates 1 pitch and 2 bar charts (Attackers and Defenders)."""
         data = pitch_control_data[frame_idx]
         
         # Clear previous player positions
@@ -454,12 +542,11 @@ class Visualizer:
             if txt != self.time_text:
                 txt.remove()
         
-        # Draw players with net influence rankings
-        # Note: colors are determined inside _draw_players_on_pitch based on home/away
+        # Draw players with both attacker and defender rankings
         self._draw_players_on_pitch(
             self.ax_pitch, data,
             bar_data['top5_net_ids'], bar_data['net_rankings'],
-            None, None  # Colors determined by home/away inside the method
+            bar_data['top5_defender_ids'], bar_data['defender_rankings']
         )
         
         # Draw ball
@@ -473,29 +560,52 @@ class Visualizer:
         time_str = f"Time: {data['time']:.1f}s | Frame: {frame_idx+1}/{len(pitch_control_data)}"
         self.time_text.set_text(time_str)
         
-        # Update bar chart
+        # Update bar charts
         self._update_bar_charts(data['time'], bar_data)
         
         return [self.time_text]
     
-    def _draw_players_on_pitch(self, ax, data, top5_ids, rankings, color_top5, color_others):
-        """Draw players on a specific pitch with given top 5 rankings."""
+    def _draw_players_on_pitch(self, ax, data, top5_attacker_ids, attacker_rankings, 
+                                top5_defender_ids, defender_rankings):
+        """Draw players on a specific pitch with attacker and/or defender top 5 rankings."""
         attacking_team = self.influence_calc.attacking_team
+        has_attackers = bool(attacker_rankings)
+        has_defenders = bool(defender_rankings)
         
         if attacking_team == 'Home':
             # Home attacking, Away defending
-            self._draw_team_players_on_ax(
-                ax, data['home_row'], top5_ids, rankings,
-                Config.HOME_COLOR_TOP5, Config.HOME_COLOR_OTHERS, show_rankings=True
-            )
-            self._draw_team_players_plain_on_ax(ax, data['away_row'], Config.AWAY_COLOR_OTHERS)
+            if has_attackers:
+                self._draw_team_players_on_ax(
+                    ax, data['home_row'], top5_attacker_ids, attacker_rankings,
+                    Config.HOME_COLOR_TOP5, Config.HOME_COLOR_OTHERS, show_rankings=True
+                )
+            else:
+                self._draw_team_players_plain_on_ax(ax, data['home_row'], Config.HOME_COLOR_OTHERS)
+            
+            if has_defenders:
+                self._draw_team_players_on_ax(
+                    ax, data['away_row'], top5_defender_ids, defender_rankings,
+                    Config.AWAY_COLOR_TOP5, Config.AWAY_COLOR_OTHERS, show_rankings=True
+                )
+            else:
+                self._draw_team_players_plain_on_ax(ax, data['away_row'], Config.AWAY_COLOR_OTHERS)
         else:
             # Away attacking, Home defending
-            self._draw_team_players_on_ax(
-                ax, data['away_row'], top5_ids, rankings,
-                Config.AWAY_COLOR_TOP5, Config.AWAY_COLOR_OTHERS, show_rankings=True
-            )
-            self._draw_team_players_plain_on_ax(ax, data['home_row'], Config.HOME_COLOR_OTHERS)
+            if has_attackers:
+                self._draw_team_players_on_ax(
+                    ax, data['away_row'], top5_attacker_ids, attacker_rankings,
+                    Config.AWAY_COLOR_TOP5, Config.AWAY_COLOR_OTHERS, show_rankings=True
+                )
+            else:
+                self._draw_team_players_plain_on_ax(ax, data['away_row'], Config.AWAY_COLOR_OTHERS)
+            
+            if has_defenders:
+                self._draw_team_players_on_ax(
+                    ax, data['home_row'], top5_defender_ids, defender_rankings,
+                    Config.HOME_COLOR_TOP5, Config.HOME_COLOR_OTHERS, show_rankings=True
+                )
+            else:
+                self._draw_team_players_plain_on_ax(ax, data['home_row'], Config.HOME_COLOR_OTHERS)
     
     def _draw_team_players_on_ax(self, ax, row, top5_ids, rankings, color_top5, color_others, show_rankings=True):
         """Draw players for a single team on a specific axis with optional rankings."""
@@ -662,44 +772,82 @@ class Visualizer:
             self.player_artists.append(line)
     
     def _update_bar_charts(self, current_time, bar_data):
-        """Update the bar chart: Net influence only."""
+        """Update bar chart based on analysis mode."""
         attacking_team = self.influence_calc.attacking_team
+        defending_team = self.influence_calc.defending_team
+        analysis_mode = self.influence_calc.analysis_mode
         
-        # Calculate cumulative values up to current time
-        net_cumulative = {pid: 0.0 for pid in bar_data['net_ids']}
+        # Use universal ax_bar if single mode, otherwise use specific axes
+        ax_to_use = None
+        if hasattr(self, 'ax_bar') and self.ax_bar is not None:
+            ax_to_use = self.ax_bar
+        elif analysis_mode == 'attacking' and self.ax_bar_attackers is not None:
+            ax_to_use = self.ax_bar_attackers
+        elif analysis_mode == 'defending' and self.ax_bar_defenders is not None:
+            ax_to_use = self.ax_bar_defenders
         
-        for result in self.influence_calc.influence_results:
-            if result['time_t1'] <= current_time:
-                for pid, inf in result['player_influences'].items():
-                    if pid in net_cumulative:
-                        pos = inf.get('positive_additive', inf.get('positive_influence', 0))
-                        neg = inf.get('negative_additive', inf.get('negative_influence', 0))
-                        net_cumulative[pid] += (pos + neg)
+        if ax_to_use is None:
+            return
         
-        # Net = positive + negative
-        net_vals = [net_cumulative.get(pid, 0) for pid in bar_data['net_ids']]
+        ax_to_use.clear()
         
-        # Bar chart: Net Influence
-        self.ax_bar_net.clear()
-        num_players = len(bar_data['net_ids'])
-        x_pos = np.arange(num_players)
-        min_net = min(net_vals) if net_vals else 0
-        max_net = max(net_vals) if net_vals else 1
-        y_margin = max(abs(max_net), abs(min_net), 0.1) * 0.15
-        self.ax_bar_net.set_xlim(-0.5, num_players - 0.5)
-        self.ax_bar_net.set_ylim(min_net - y_margin, max_net + y_margin)
-        self.ax_bar_net.axhline(y=0, color='black', linewidth=0.5, linestyle='-')
-        self.ax_bar_net.set_xticks(x_pos)
-        self.ax_bar_net.set_xticklabels(bar_data['net_names'], rotation=45, ha='right', fontsize=8)
-        self.ax_bar_net.set_ylabel('Net Influence', fontsize=10, fontweight='bold')
-        self.ax_bar_net.set_title(f'{attacking_team} - Net Influence', fontsize=11,
-                                   fontweight='bold', color='crimson')
-        self.ax_bar_net.grid(axis='y', alpha=0.3, zorder=0)
+        if analysis_mode == 'attacking':
+            # Calculate cumulative values up to current time for attackers
+            net_cumulative = {pid: 0.0 for pid in bar_data['net_ids']}
+            
+            for result in self.influence_calc.influence_results:
+                if result['time_t1'] <= current_time:
+                    for pid, inf in result['player_influences'].items():
+                        if pid in net_cumulative:
+                            pos = inf.get('positive_additive', inf.get('positive_influence', 0))
+                            neg = inf.get('negative_additive', inf.get('negative_influence', 0))
+                            net_cumulative[pid] += (pos + neg)
+            
+            net_vals = [net_cumulative.get(pid, 0) for pid in bar_data['net_ids']]
+            player_names = bar_data['net_names']
+            num_players = len(bar_data['net_ids'])
+            title = f'{attacking_team} - Attackers'
+            main_color = 'crimson'
+            alt_color = '#E57373'
+        else:
+            # Defending mode - calculate cumulative values for defenders
+            defender_cumulative = {pid: 0.0 for pid in bar_data['defender_ids']}
+            
+            for result in self.influence_calc.influence_results:
+                if result['time_t1'] <= current_time:
+                    for pid, inf in result['player_influences'].items():
+                        if pid in defender_cumulative:
+                            # Use net_necessity for defending mode
+                            val = inf.get('net_necessity', inf.get('net', 0))
+                            defender_cumulative[pid] += val
+            
+            net_vals = [defender_cumulative.get(pid, 0) for pid in bar_data['defender_ids']]
+            player_names = bar_data['defender_names']
+            num_players = len(bar_data['defender_ids'])
+            title = f'{defending_team} - Defenders'
+            main_color = 'dodgerblue'
+            alt_color = '#64B5F6'
         
-        # Color bars based on positive/negative
-        colors = ['crimson' if v >= 0 else '#E57373' for v in net_vals]
-        self.ax_bar_net.bar(x_pos, net_vals, color=colors, alpha=0.8,
-                            edgecolor='black', linewidth=0.5)
+        # Draw bar chart
+        if num_players > 0:
+            x_pos = np.arange(num_players)
+            min_val = min(net_vals) if net_vals else 0
+            max_val = max(net_vals) if net_vals else 1
+            y_margin = max(abs(max_val), abs(min_val), 0.1) * 0.15
+            
+            ax_to_use.set_xlim(-0.5, num_players - 0.5)
+            ax_to_use.set_ylim(min_val - y_margin, max_val + y_margin)
+            ax_to_use.axhline(y=0, color='black', linewidth=0.5, linestyle='-')
+            ax_to_use.set_xticks(x_pos)
+            ax_to_use.set_xticklabels(player_names, rotation=45, ha='right', fontsize=8)
+            ax_to_use.set_ylabel('Net Influence', fontsize=10, fontweight='bold')
+            ax_to_use.set_title(title, fontsize=11, fontweight='bold', color=main_color)
+            ax_to_use.grid(axis='y', alpha=0.3, zorder=0)
+            
+            # Color bars based on positive/negative
+            colors = [main_color if v >= 0 else alt_color for v in net_vals]
+            ax_to_use.bar(x_pos, net_vals, color=colors, alpha=0.8,
+                         edgecolor='black', linewidth=0.5)
     
     def _try_save_gif(self, anim, output_path):
         """Try to save as GIF as fallback."""

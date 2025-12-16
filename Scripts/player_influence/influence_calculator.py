@@ -13,7 +13,7 @@ from .pitch_control import PitchControlCalculator
 class InfluenceCalculator:
     """Calculates individual player influence on pitch control."""
     
-    def __init__(self, data_loader, pc_calculator, attacking_team='Home'):
+    def __init__(self, data_loader, pc_calculator, attacking_team='Home', analysis_mode='attacking'):
         """
         Initialize the influence calculator.
         
@@ -25,11 +25,15 @@ class InfluenceCalculator:
             Pitch control calculator instance
         attacking_team : str
             'Home' or 'Away'
+        analysis_mode : str
+            'attacking' - Analyze attackers using additive approach
+            'defending' - Analyze defenders using necessity approach
         """
         self.data_loader = data_loader
         self.pc_calculator = pc_calculator
         self.attacking_team = attacking_team
         self.defending_team = 'Away' if attacking_team == 'Home' else 'Home'
+        self.analysis_mode = analysis_mode
         
         self.influence_results = []
         self.attacker_influences = {}
@@ -299,13 +303,23 @@ class InfluenceCalculator:
             PC_baseline_attack = PC_baseline
             PC_actual_attack = PC_actual
         
-        # Attacking player influences only (defending players excluded from analysis)
-        for player_id in attacking_players:
-            influence = self._calculate_player_influence(
-                player_id, attack_t, attack_t1, attack_t_bf, attack_t1_bf,
-                defend_t_bf, defend_t1_bf, PC_baseline_attack, PC_actual_attack, 'attacking'
-            )
-            player_influences[player_id] = influence
+        # Analyze based on mode
+        if self.analysis_mode == 'attacking':
+            # Attacking Analysis: Only analyze attackers using additive approach
+            for player_id in attacking_players:
+                influence = self._calculate_player_influence(
+                    player_id, attack_t, attack_t1, attack_t_bf, attack_t1_bf,
+                    defend_t_bf, defend_t1_bf, PC_baseline_attack, PC_actual_attack, 'attacking'
+                )
+                player_influences[player_id] = influence
+        else:  # self.analysis_mode == 'defending'
+            # Defending Analysis: Only analyze defenders using necessity approach
+            for player_id in defending_players:
+                influence = self._calculate_player_influence(
+                    player_id, defend_t, defend_t1, defend_t_bf, defend_t1_bf,
+                    attack_t_bf, attack_t1_bf, PC_baseline_attack, PC_actual_attack, 'defending'
+                )
+                player_influences[player_id] = influence
         
         # Calculate sum and interaction
         if len(player_influences) > 0:
@@ -349,36 +363,45 @@ class InfluenceCalculator:
     def _calculate_player_influence(self, player_id, row_t, row_t1, row_t_bf, row_t1_bf,
                                     opponent_row_bf, opponent_row_t1_bf, PC_baseline, PC_actual, team_type):
         """
-        Calculate influence for a single player using BOTH approaches:
+        Calculate influence for a single player using mode-specific approach:
         
-        Approach 1 (Additive): "What does this player's movement ADD?"
+        Attacking mode (team_type='attacking'):
+            Additive Approach: "What does this player's movement ADD?"
             - Hybrid: Only this player at t+1, everyone else at t
             - ΔPC = PC_hybrid - PC_baseline
         
-        Approach 2 (Necessity): "What would we LOSE without this movement?"
+        Defending mode (team_type='defending'):
+            Necessity Approach: "What would we LOSE without this movement?"
             - Hybrid: Only this player at t, everyone else at t+1
             - ΔPC = PC_actual - PC_frozen
         """
         results = {}
         
+        # Select approach based on team type
+        use_additive = (team_type == 'attacking')
+        use_necessity = (team_type == 'defending')
+        
+        ΔPC_additive = None
+        ΔPC_necessity = None
+        
         # =====================================================================
-        # APPROACH 1: ADDITIVE (current approach)
+        # APPROACH 1: ADDITIVE (for attacking analysis)
         # "Move only this player to t+1, keep everyone else at t"
         # =====================================================================
-        hybrid_additive = row_t_bf.copy()
-        
-        # Update position to t+1
-        hybrid_additive[f'{player_id}_x'] = row_t1_bf[f'{player_id}_x']
-        hybrid_additive[f'{player_id}_y'] = row_t1_bf[f'{player_id}_y']
-        
-        # Update velocities if available
-        if f'{player_id}_vx' in row_t1_bf.keys():
-            hybrid_additive[f'{player_id}_vx'] = row_t1_bf[f'{player_id}_vx']
-            hybrid_additive[f'{player_id}_vy'] = row_t1_bf[f'{player_id}_vy']
-            hybrid_additive[f'{player_id}_speed'] = row_t1_bf[f'{player_id}_speed']
-        
-        # Calculate PC with only this player moved forward
-        if team_type == 'attacking':
+        if use_additive:
+            hybrid_additive = row_t_bf.copy()
+            
+            # Update position to t+1
+            hybrid_additive[f'{player_id}_x'] = row_t1_bf[f'{player_id}_x']
+            hybrid_additive[f'{player_id}_y'] = row_t1_bf[f'{player_id}_y']
+            
+            # Update velocities if available
+            if f'{player_id}_vx' in row_t1_bf.keys():
+                hybrid_additive[f'{player_id}_vx'] = row_t1_bf[f'{player_id}_vx']
+                hybrid_additive[f'{player_id}_vy'] = row_t1_bf[f'{player_id}_vy']
+                hybrid_additive[f'{player_id}_speed'] = row_t1_bf[f'{player_id}_speed']
+            
+            # Calculate PC with only this player moved forward
             if self.attacking_team == 'Home':
                 PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface(
                     hybrid_additive, opponent_row_bf,
@@ -392,97 +415,81 @@ class InfluenceCalculator:
                     attacking_team=self.attacking_team
                 )
                 PC_hybrid_add = 1 - PC_hybrid_add
-        else:  # defending
-            if self.attacking_team == 'Home':
-                PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface(
-                    opponent_row_bf, hybrid_additive,
-                    attacking_half_only=True,
-                    attacking_team=self.attacking_team
-                )
-            else:
-                PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface(
-                    hybrid_additive, opponent_row_bf,
-                    attacking_half_only=True,
-                    attacking_team=self.attacking_team
-                )
-                PC_hybrid_add = 1 - PC_hybrid_add
-        
-        ΔPC_additive = PC_hybrid_add - PC_baseline
+            
+            ΔPC_additive = PC_hybrid_add - PC_baseline
         
         # =====================================================================
-        # APPROACH 2: NECESSITY (new approach)
+        # APPROACH 2: NECESSITY (for defending analysis)
         # "Freeze only this player at t, move everyone else to t+1"
         # =====================================================================
-        hybrid_frozen = row_t1_bf.copy()
-        
-        # Keep this player at t (frozen)
-        hybrid_frozen[f'{player_id}_x'] = row_t_bf[f'{player_id}_x']
-        hybrid_frozen[f'{player_id}_y'] = row_t_bf[f'{player_id}_y']
-        
-        # Keep velocities at t if available
-        if f'{player_id}_vx' in row_t_bf.keys():
-            hybrid_frozen[f'{player_id}_vx'] = row_t_bf[f'{player_id}_vx']
-            hybrid_frozen[f'{player_id}_vy'] = row_t_bf[f'{player_id}_vy']
-            hybrid_frozen[f'{player_id}_speed'] = row_t_bf[f'{player_id}_speed']
-        
-        # Calculate PC with this player frozen at t
-        if team_type == 'attacking':
+        if use_necessity:
+            hybrid_frozen = row_t1_bf.copy()
+            
+            # Keep this player at t (frozen)
+            hybrid_frozen[f'{player_id}_x'] = row_t_bf[f'{player_id}_x']
+            hybrid_frozen[f'{player_id}_y'] = row_t_bf[f'{player_id}_y']
+            
+            # Keep velocities at t if available
+            if f'{player_id}_vx' in row_t_bf.keys():
+                hybrid_frozen[f'{player_id}_vx'] = row_t_bf[f'{player_id}_vx']
+                hybrid_frozen[f'{player_id}_vy'] = row_t_bf[f'{player_id}_vy']
+                hybrid_frozen[f'{player_id}_speed'] = row_t_bf[f'{player_id}_speed']
+            
+            # Calculate PC with this player frozen at t
+            # For defending analysis, we measure opponent's control
             if self.attacking_team == 'Home':
-                PC_frozen, _, _ = self.pc_calculator.calculate_surface(
-                    hybrid_frozen, opponent_row_t1_bf,
-                    attacking_half_only=True,
-                    attacking_team=self.attacking_team
-                )
-            else:
-                PC_frozen, _, _ = self.pc_calculator.calculate_surface(
-                    opponent_row_t1_bf, hybrid_frozen,
-                    attacking_half_only=True,
-                    attacking_team=self.attacking_team
-                )
-                PC_frozen = 1 - PC_frozen
-        else:  # defending
-            if self.attacking_team == 'Home':
+                # Attacking team is Home, so defenders are Away
                 PC_frozen, _, _ = self.pc_calculator.calculate_surface(
                     opponent_row_t1_bf, hybrid_frozen,
                     attacking_half_only=True,
                     attacking_team=self.attacking_team
                 )
             else:
+                # Attacking team is Away, so defenders are Home
                 PC_frozen, _, _ = self.pc_calculator.calculate_surface(
                     hybrid_frozen, opponent_row_t1_bf,
                     attacking_half_only=True,
                     attacking_team=self.attacking_team
                 )
                 PC_frozen = 1 - PC_frozen
+            
+            # Necessity = what we would lose without this movement
+            # For defenders: if freezing them increases attacking PC, they were good at defending
+            # So we INVERT the sign: negative ΔPC (attacks worse) = positive defender influence
+            ΔPC_necessity = PC_frozen - PC_actual
         
-        # Necessity = what we would lose without this movement
-        ΔPC_necessity = PC_actual - PC_frozen
+        # Build results based on which approach was used
+        if use_additive:
+            ΔPC = ΔPC_additive
+        else:  # use_necessity
+            ΔPC = ΔPC_necessity
         
         return {
-            # Approach 1: Additive
-            'delta_PC': ΔPC_additive,  # Keep for backward compatibility
-            'delta_PC_additive': ΔPC_additive,
-            'total_additive': np.nansum(np.abs(ΔPC_additive)),
-            'positive_additive': np.nansum(np.where(ΔPC_additive > 0, ΔPC_additive, 0)),
-            'negative_additive': np.nansum(np.where(ΔPC_additive < 0, ΔPC_additive, 0)),
-            'net_additive': np.nansum(ΔPC_additive),
+            # Primary metrics (unified interface)
+            'delta_PC': ΔPC,
+            'total_influence': np.nansum(np.abs(ΔPC)),
+            'positive_influence': np.nansum(np.where(ΔPC > 0, ΔPC, 0)),
+            'negative_influence': np.nansum(np.where(ΔPC < 0, ΔPC, 0)),
+            'net_influence': np.nansum(ΔPC),
             
-            # Approach 2: Necessity
-            'delta_PC_necessity': ΔPC_necessity,
-            'total_necessity': np.nansum(np.abs(ΔPC_necessity)),
-            'positive_necessity': np.nansum(np.where(ΔPC_necessity > 0, ΔPC_necessity, 0)),
-            'negative_necessity': np.nansum(np.where(ΔPC_necessity < 0, ΔPC_necessity, 0)),
-            'net_necessity': np.nansum(ΔPC_necessity),
+            # Detailed metrics by approach
+            'delta_PC_additive': ΔPC_additive if use_additive else None,
+            'total_additive': np.nansum(np.abs(ΔPC_additive)) if use_additive else None,
+            'positive_additive': np.nansum(np.where(ΔPC_additive > 0, ΔPC_additive, 0)) if use_additive else None,
+            'negative_additive': np.nansum(np.where(ΔPC_additive < 0, ΔPC_additive, 0)) if use_additive else None,
+            'net_additive': np.nansum(ΔPC_additive) if use_additive else None,
             
-            # Legacy (keep for backward compatibility)
-            'total_influence': np.nansum(np.abs(ΔPC_additive)),
-            'positive_influence': np.nansum(np.where(ΔPC_additive > 0, ΔPC_additive, 0)),
-            'negative_influence': np.nansum(np.where(ΔPC_additive < 0, ΔPC_additive, 0)),
+            'delta_PC_necessity': ΔPC_necessity if use_necessity else None,
+            'total_necessity': np.nansum(np.abs(ΔPC_necessity)) if use_necessity else None,
+            'positive_necessity': np.nansum(np.where(ΔPC_necessity > 0, ΔPC_necessity, 0)) if use_necessity else None,
+            'negative_necessity': np.nansum(np.where(ΔPC_necessity < 0, ΔPC_necessity, 0)) if use_necessity else None,
+            'net_necessity': np.nansum(ΔPC_necessity) if use_necessity else None,
             
             # Position info
             'position_t': (row_t[f'{player_id}_x'], row_t[f'{player_id}_y']),
             'position_t1': (row_t1[f'{player_id}_x'], row_t1[f'{player_id}_y']),
-            'team': team_type
+            'team': team_type,
+            'approach': 'additive' if use_additive else 'necessity'
         }
     
     def _aggregate_influences(self):
@@ -519,24 +526,48 @@ class InfluenceCalculator:
                         'frames': 0
                     }
                 
-                # Approach 1: Additive
-                target[player_id]['total_additive'] += influence_data.get('total_additive', influence_data['total_influence'])
-                target[player_id]['positive_additive'] += influence_data.get('positive_additive', influence_data['positive_influence'])
-                target[player_id]['negative_additive'] += influence_data.get('negative_additive', influence_data['negative_influence'])
-                target[player_id]['net_additive'] = target[player_id]['positive_additive'] + target[player_id]['negative_additive']
+                # Approach-specific aggregation
+                if influence_data.get('total_additive') is not None:
+                    target[player_id]['total_additive'] += influence_data['total_additive']
+                    target[player_id]['positive_additive'] += influence_data['positive_additive']
+                    target[player_id]['negative_additive'] += influence_data['negative_additive']
+                    target[player_id]['net_additive'] += influence_data['net_additive']
                 
-                # Approach 2: Necessity
-                target[player_id]['total_necessity'] += influence_data.get('total_necessity', 0.0)
-                target[player_id]['positive_necessity'] += influence_data.get('positive_necessity', 0.0)
-                target[player_id]['negative_necessity'] += influence_data.get('negative_necessity', 0.0)
-                target[player_id]['net_necessity'] = target[player_id]['positive_necessity'] + target[player_id]['negative_necessity']
+                if influence_data.get('total_necessity') is not None:
+                    target[player_id]['total_necessity'] += influence_data['total_necessity']
+                    target[player_id]['positive_necessity'] += influence_data['positive_necessity']
+                    target[player_id]['negative_necessity'] += influence_data['negative_necessity']
+                    target[player_id]['net_necessity'] += influence_data['net_necessity']
                 
-                # Legacy
+                # Legacy (unified metrics - work for both approaches)
                 target[player_id]['total'] += influence_data['total_influence']
                 target[player_id]['positive'] += influence_data['positive_influence']
                 target[player_id]['negative'] += influence_data['negative_influence']
                 target[player_id]['net'] = target[player_id]['positive'] + target[player_id]['negative']
                 target[player_id]['frames'] += 1
+    
+    def get_sorted_players(self, reverse=True):
+        """Get players sorted by the metric appropriate for current analysis_mode.
+        
+        Returns
+        -------
+        list of tuples
+            (player_id, stats_dict) sorted by net influence for current mode
+        """
+        if self.analysis_mode == 'attacking':
+            # Attacking mode: sort attackers by net_additive
+            return sorted(
+                self.attacker_influences.items(),
+                key=lambda x: x[1].get('net_additive', 0),
+                reverse=reverse
+            )
+        else:
+            # Defending mode: sort defenders by net_necessity
+            return sorted(
+                self.defender_influences.items(),
+                key=lambda x: x[1].get('net_necessity', 0),
+                reverse=reverse
+            )
     
     def get_sorted_attackers(self, by='positive_additive', reverse=True):
         """Get attackers sorted by specified metric."""
@@ -546,8 +577,8 @@ class InfluenceCalculator:
             reverse=reverse
         )
     
-    def get_sorted_defenders(self, by='negative_additive', reverse=False):
-        """Get defenders sorted by specified metric."""
+    def get_sorted_defenders(self, by='net_necessity', reverse=True):
+        """Get defenders sorted by specified metric (defaults to net_necessity for defending mode)."""
         return sorted(
             self.defender_influences.items(),
             key=lambda x: x[1].get(by, x[1].get('negative', 0)),
@@ -572,37 +603,47 @@ class InfluenceCalculator:
         }
     
     def print_summary(self, data_loader):
-        """Print summary statistics to console comparing BOTH approaches (attackers only)."""
+        """Print summary statistics respecting the current analysis_mode."""
         print("=" * 90)
-        print("SUMMARY STATISTICS - ATTACKING TEAM ANALYSIS")
-        print("=" * 90)
-        print()
-        print("APPROACH 1 (Additive): 'What does this player's movement ADD?'")
-        print("           → Move only this player to t+1, keep everyone else at t")
-        print()
-        print("APPROACH 2 (Necessity): 'What would we LOSE without this movement?'")
-        print("           → Freeze only this player at t, move everyone else to t+1")
-        print()
         
-        # Attackers comparison
-        sorted_attackers_add = self.get_sorted_attackers(by='net_additive', reverse=True)
-        sorted_attackers_nec = self.get_sorted_attackers(by='net_necessity', reverse=True)
-        
-        print(f"ATTACKING TEAM ({self.attacking_team}) - NET INFLUENCE COMPARISON")
-        print("=" * 100)
-        print(f"{'Rank':<6} {'Player':<22} {'Net(Add)':<12} {'Rank(N)':<8} {'Net(Nec)':<12} {'Diff':<10}")
-        print("-" * 100)
-        
-        # Create ranking lookup for necessity
-        nec_rankings = {p[0]: rank for rank, p in enumerate(sorted_attackers_nec, 1)}
-        
-        for rank, (player_id, stats) in enumerate(sorted_attackers_add, 1):
-            name = data_loader.get_player_display_name(player_id)
-            net_add = stats['net_additive']
-            net_nec = stats['net_necessity']
-            nec_rank = nec_rankings.get(player_id, '-')
-            diff = net_nec - net_add
-            print(f"{rank:<6} {name:<22} {net_add:>11.2f} {nec_rank:>7} {net_nec:>11.2f} {diff:>+9.2f}")
+        if self.analysis_mode == 'attacking':
+            print("SUMMARY STATISTICS - ATTACKING TEAM ANALYSIS")
+            print("=" * 90)
+            print()
+            print("APPROACH: Additive - 'What does this player's movement ADD?'")
+            print("          → Move only this player to t+1, keep everyone else at t")
+            print()
+            
+            sorted_players = self.get_sorted_players(reverse=True)
+            
+            print(f"ATTACKING TEAM ({self.attacking_team}) - NET INFLUENCE (Additive)")
+            print("=" * 80)
+            print(f"{'Rank':<6} {'Player':<30} {'Net Influence':<15}")
+            print("-" * 80)
+            
+            for rank, (player_id, stats) in enumerate(sorted_players, 1):
+                name = data_loader.get_player_display_name(player_id)
+                net_val = stats['net_additive']
+                print(f"{rank:<6} {name:<30} {net_val:>14.2f}")
+        else:
+            print("SUMMARY STATISTICS - DEFENDING TEAM ANALYSIS")
+            print("=" * 90)
+            print()
+            print("APPROACH: Necessity - 'What would we LOSE without this movement?'")
+            print("          → Freeze only this player at t, move everyone else to t+1")
+            print()
+            
+            sorted_players = self.get_sorted_players(reverse=True)
+            
+            print(f"DEFENDING TEAM ({self.defending_team}) - NET INFLUENCE (Necessity)")
+            print("=" * 80)
+            print(f"{'Rank':<6} {'Player':<30} {'Net Influence':<15}")
+            print("-" * 80)
+            
+            for rank, (player_id, stats) in enumerate(sorted_players, 1):
+                name = data_loader.get_player_display_name(player_id)
+                net_val = stats['net_necessity']
+                print(f"{rank:<6} {name:<30} {net_val:>14.2f}")
         
         print()
         
@@ -614,10 +655,10 @@ class InfluenceCalculator:
         print()
         
         if stats['interaction_percentage'] < 10:
-            print("✓ Low interaction - both approaches should give similar results")
+            print("✓ Low interaction - individual contributions mostly independent")
         elif stats['interaction_percentage'] < 20:
-            print("~ Moderate interaction - expect some differences between approaches")
+            print("~ Moderate interaction - some player coupling effects")
         else:
-            print("! High interaction - significant player coupling, approaches will differ")
+            print("! High interaction - significant player coupling")
         
         print()

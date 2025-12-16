@@ -56,6 +56,6 @@ class Config:
         return os.path.join(cls.OUTPUT_DIR, filename)
     
     @classmethod
-    def get_movie_filename(cls, sequence_number):
+    def get_movie_filename(cls, game_id, sequence_number, analysis_mode):
         """Generate movie filename for a sequence."""
-        return f'sequence_{int(sequence_number)}_player_influence.mp4'
+        return f'game_{game_id}_sequence_{int(sequence_number)}_{analysis_mode}_playerInfluence.mp4'
