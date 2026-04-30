@@ -19,6 +19,7 @@ Optimizations:
 
 import sys
 import os
+import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import Metrica_IO as mio
@@ -55,6 +56,22 @@ except ValueError:
     sys.exit(1)
 
 print(f"\nSelected match ID: {game_id}")
+print()
+
+# Load metadata to determine attacking directions
+print("Loading metadata...")
+metadata_path = os.path.join('PFF Data', 'Meta Data', f'{game_id}.json')
+try:
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)[0]
+    homeTeamStartLeft = metadata.get('homeTeamStartLeft', True)
+    print(f"homeTeamStartLeft: {homeTeamStartLeft}")
+    print(f"  -> Home team attacks towards: {'RIGHT (x > 0)' if homeTeamStartLeft else 'LEFT (x < 0)'}")
+    print(f"  -> Away team attacks towards: {'LEFT (x < 0)' if homeTeamStartLeft else 'RIGHT (x > 0)'}")
+except FileNotFoundError:
+    print(f"Warning: Metadata file not found at {metadata_path}")
+    print("Defaulting to homeTeamStartLeft=True")
+    homeTeamStartLeft = True
 print()
 
 print("Loading data...")
@@ -181,7 +198,7 @@ print()
 # PITCH CONTROL CALCULATION FUNCTION
 # =============================================================================
 
-def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers, attacking_half_only=True, attacking_team='Home'):
+def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers, attacking_half_only=True, attacking_team='Home', homeTeamStartLeft=True):
     """
     Calculate pitch control surface for given player positions
     
@@ -197,9 +214,9 @@ def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers, atta
         If True, only calculate PC in the attacking half (the half the team attacks towards)
     attacking_team : str
         'Home' or 'Away' - determines which half is the attacking half
-        After to_single_playing_direction():
-        - Home team attacks towards positive x (right side, x > 0)
-        - Away team attacks towards negative x (left side, x < 0)
+    homeTeamStartLeft : bool
+        If True, home team started left and attacks right (x > 0), away attacks left (x < 0)
+        If False, home team started right and attacks left (x < 0), away attacks right (x > 0)
     """
     
     ball_pos = np.array([home_row['ball_x'], home_row['ball_y']])
@@ -226,17 +243,28 @@ def calculate_pitch_control_surface(home_row, away_row, params, GK_numbers, atta
             
             # Only calculate in the attacking half (where the team is trying to score)
             if attacking_half_only:
-                # Home team attacks towards positive x (right), Away team attacks towards negative x (left)
-                if attacking_team == 'Home' and target_position[0] <= 0:
-                    # Home attacks right (x > 0), skip left half
-                    PPCFa[ii, jj] = np.nan
-                    PPCFd[ii, jj] = np.nan
-                    continue
-                elif attacking_team == 'Away' and target_position[0] >= 0:
-                    # Away attacks left (x < 0), skip right half
-                    PPCFa[ii, jj] = np.nan
-                    PPCFd[ii, jj] = np.nan
-                    continue
+                if attacking_team == 'Home':
+                    # If homeTeamStartLeft=True, home attacks right (x > 0), skip left half
+                    # If homeTeamStartLeft=False, home attacks left (x < 0), skip right half
+                    if homeTeamStartLeft and target_position[0] <= 0:
+                        PPCFa[ii, jj] = np.nan
+                        PPCFd[ii, jj] = np.nan
+                        continue
+                    elif not homeTeamStartLeft and target_position[0] >= 0:
+                        PPCFa[ii, jj] = np.nan
+                        PPCFd[ii, jj] = np.nan
+                        continue
+                elif attacking_team == 'Away':
+                    # If homeTeamStartLeft=True, away attacks left (x < 0), skip right half
+                    # If homeTeamStartLeft=False, away attacks right (x > 0), skip left half
+                    if homeTeamStartLeft and target_position[0] >= 0:
+                        PPCFa[ii, jj] = np.nan
+                        PPCFd[ii, jj] = np.nan
+                        continue
+                    elif not homeTeamStartLeft and target_position[0] <= 0:
+                        PPCFa[ii, jj] = np.nan
+                        PPCFd[ii, jj] = np.nan
+                        continue
             
             PPCFa[ii, jj], PPCFd[ii, jj] = mpc.calculate_pitch_control_at_target(
                 target_position, attacking_players, defending_players, ball_pos, params
@@ -253,7 +281,11 @@ print("CALCULATING PLAYER INFLUENCES")
 print("=" * 70)
 print()
 print(f"NOTE: Only calculating pitch control in the ATTACKING HALF")
-print(f"      {default_attacking_team} attacks towards {'RIGHT (x > 0)' if default_attacking_team == 'Home' else 'LEFT (x < 0)'}")
+if default_attacking_team == 'Home':
+    direction = 'RIGHT (x > 0)' if homeTeamStartLeft else 'LEFT (x < 0)'
+else:
+    direction = 'LEFT (x < 0)' if homeTeamStartLeft else 'RIGHT (x > 0)'
+print(f"      {default_attacking_team} attacks towards {direction}")
 print()
 
 # Store results
@@ -285,13 +317,13 @@ for i in range(len(frames_to_analyze) - 1):
     # Only calculate in the attacking half (the half the team attacks towards)
     PC_baseline, xgrid, ygrid = calculate_pitch_control_surface(
         home_t_backfilled, away_t_backfilled, params, GK_numbers,
-        attacking_half_only=True, attacking_team=default_attacking_team
+        attacking_half_only=True, attacking_team=default_attacking_team, homeTeamStartLeft=homeTeamStartLeft
     )
     
     # 2. Actual: PC at time t+1 (all players moved)
     PC_actual, _, _ = calculate_pitch_control_surface(
         home_t1_backfilled, away_t1_backfilled, params, GK_numbers,
-        attacking_half_only=True, attacking_team=default_attacking_team
+        attacking_half_only=True, attacking_team=default_attacking_team, homeTeamStartLeft=homeTeamStartLeft
     )
     
     ΔPC_actual = PC_actual - PC_baseline
@@ -365,12 +397,12 @@ for i in range(len(frames_to_analyze) - 1):
         if default_attacking_team == 'Home':
             PC_only_this_player, _, _ = calculate_pitch_control_surface(
                 attack_hybrid, defend_t_backfilled, params, GK_numbers,
-                attacking_half_only=True, attacking_team=default_attacking_team
+                attacking_half_only=True, attacking_team=default_attacking_team, homeTeamStartLeft=homeTeamStartLeft
             )
         else:  # Away team attacking
             PC_only_this_player, _, _ = calculate_pitch_control_surface(
                 defend_t_backfilled, attack_hybrid, params, GK_numbers,
-                attacking_half_only=True, attacking_team=default_attacking_team
+                attacking_half_only=True, attacking_team=default_attacking_team, homeTeamStartLeft=homeTeamStartLeft
             )
             # For away team, invert the pitch control (1 - PPCF)
             PC_only_this_player = 1 - PC_only_this_player
@@ -412,12 +444,12 @@ for i in range(len(frames_to_analyze) - 1):
         if default_attacking_team == 'Home':
             PC_only_this_defender, _, _ = calculate_pitch_control_surface(
                 attack_t_backfilled, defend_hybrid, params, GK_numbers,
-                attacking_half_only=True, attacking_team=default_attacking_team
+                attacking_half_only=True, attacking_team=default_attacking_team, homeTeamStartLeft=homeTeamStartLeft
             )
         else:  # Away team attacking
             PC_only_this_defender, _, _ = calculate_pitch_control_surface(
                 defend_hybrid, attack_t_backfilled, params, GK_numbers,
-                attacking_half_only=True, attacking_team=default_attacking_team
+                attacking_half_only=True, attacking_team=default_attacking_team, homeTeamStartLeft=homeTeamStartLeft
             )
             PC_only_this_defender = 1 - PC_only_this_defender
         

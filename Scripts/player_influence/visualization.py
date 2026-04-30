@@ -200,6 +200,246 @@ class Visualizer:
         plt.close()
         
         return correlation
+    
+    def generate_interaction_analysis_plot(self, sequence_number, save_path=None):
+        """
+        Generate interaction analysis plot showing team synergy/interference.
+        
+        X-axis: Σ(individual influences) - sum of all individual player contributions
+        Y-axis: ΔPC_actual - actual pitch control change
+        45° diagonal line represents "no interaction"
+        Points above = positive interaction (synergy)
+        Points below = negative interaction (interference)
+        
+        Parameters
+        ----------
+        sequence_number : int
+            Sequence number for title
+        save_path : str, optional
+            Path to save the plot. If None, displays interactively.
+        
+        Returns
+        -------
+        dict
+            Dictionary containing analysis metrics:
+            - correlation: Linear correlation coefficient
+            - mean_deviation: Average deviation from diagonal
+            - synergy_count: Number of points showing synergy
+            - interference_count: Number of points showing interference
+            - synergy_percentage: Percentage of points showing synergy
+        """
+        # Collect data from influence results
+        sum_individual = []
+        actual_change = []
+        time_points = []
+        
+        for result in self.influence_calc.influence_results:
+            # Get the sum of individual influences (already calculated)
+            # Use nansum to handle any NaN values in the grids
+            delta_sum = np.nansum(result['ΔPC_sum'])  # Sum over grid, ignoring NaN
+            delta_actual = np.nansum(result['ΔPC_actual'])  # Sum over grid, ignoring NaN
+            
+            sum_individual.append(delta_sum)
+            actual_change.append(delta_actual)
+            time_points.append(result['time_t'])
+        
+        if not sum_individual:
+            print("No data available for interaction analysis plot.")
+            return None
+        
+        sum_individual = np.array(sum_individual)
+        actual_change = np.array(actual_change)
+        time_points = np.array(time_points)
+        
+        # Filter out NaN and Inf values
+        valid_mask = np.isfinite(sum_individual) & np.isfinite(actual_change)
+        if not np.any(valid_mask):
+            print("ERROR: All data points contain NaN or Inf values!")
+            return None
+        
+        sum_individual = sum_individual[valid_mask]
+        actual_change = actual_change[valid_mask]
+        time_points = time_points[valid_mask]
+        
+        if len(sum_individual) < 2:
+            print("ERROR: Not enough valid data points for interaction analysis!")
+            return None
+        
+        # Calculate metrics
+        correlation = np.corrcoef(sum_individual, actual_change)[0, 1]
+        if np.isnan(correlation):
+            correlation = 0
+        
+        # Deviation from diagonal (y - x)
+        deviation = actual_change - sum_individual
+        mean_deviation = np.nanmean(deviation)
+        std_deviation = np.nanstd(deviation)
+        
+        # Count synergy (above diagonal) vs interference (below diagonal)
+        synergy_mask = deviation > 0
+        synergy_count = np.sum(synergy_mask)
+        interference_count = np.sum(~synergy_mask)
+        total_points = len(deviation)
+        synergy_percentage = (synergy_count / total_points * 100) if total_points > 0 else 0
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(12, 10))
+        
+        # Create colormap for time
+        norm = plt.Normalize(vmin=min(time_points), vmax=max(time_points))
+        cmap = cm.coolwarm
+        
+        # Scatter plot colored by time
+        scatter = ax.scatter(sum_individual, actual_change, s=100, c=time_points,
+                            cmap=cmap, norm=norm, edgecolors='black', 
+                            linewidth=1.5, alpha=0.8, zorder=5)
+        
+        # Add colorbar for time
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Time (seconds)', fontsize=11, fontweight='bold')
+        
+        # Determine axis limits
+        all_vals = np.concatenate([sum_individual, actual_change])
+        all_vals_finite = all_vals[np.isfinite(all_vals)]
+        
+        if len(all_vals_finite) > 0:
+            min_val = np.min(all_vals_finite)
+            max_val = np.max(all_vals_finite)
+            
+            # Handle case where min == max
+            if abs(max_val - min_val) < 1e-10:
+                margin = max(abs(max_val) * 0.1, 0.1)
+                min_val -= margin
+                max_val += margin
+            else:
+                margin = max(abs(max_val - min_val) * 0.15, 0.01)
+                min_val -= margin
+                max_val += margin
+        else:
+            min_val, max_val = -0.1, 0.1
+        
+        # Ensure limits are valid
+        if not np.isfinite(min_val) or not np.isfinite(max_val):
+            min_val, max_val = -0.1, 0.1
+        
+        # Draw 45° diagonal line (no interaction line)
+        diagonal_line = np.linspace(min_val, max_val, 100)
+        ax.plot(diagonal_line, diagonal_line, 'k--', linewidth=2.5, alpha=0.7,
+               label='No Interaction (y = x)', zorder=3)
+        
+        # Shade regions
+        ax.fill_between(diagonal_line, diagonal_line, max_val, 
+                       color='green', alpha=0.1, label='Synergy Region')
+        ax.fill_between(diagonal_line, min_val, diagonal_line, 
+                       color='red', alpha=0.1, label='Interference Region')
+        
+        # Add reference lines at origin
+        ax.axhline(y=0, color='gray', linestyle='-', alpha=0.3, linewidth=1, zorder=1)
+        ax.axvline(x=0, color='gray', linestyle='-', alpha=0.3, linewidth=1, zorder=1)
+        
+        # Regression line
+        if len(sum_individual) > 1:
+            try:
+                z = np.polyfit(sum_individual, actual_change, 1)
+                p = np.poly1d(z)
+                x_line = np.linspace(np.min(sum_individual), np.max(sum_individual), 100)
+                y_line = p(x_line)
+                ax.plot(x_line, y_line, 'b-', alpha=0.7, linewidth=2,
+                       label=f'Regression (r = {correlation:.3f})', zorder=4)
+            except:
+                # Skip regression line if it fails
+                pass
+        
+        # Labels and title
+        ax.set_xlabel('Σ(Individual Influences) - Sum of Player Contributions', 
+                     fontsize=12, fontweight='bold')
+        ax.set_ylabel('ΔPC_actual - Actual Pitch Control Change', 
+                     fontsize=12, fontweight='bold')
+        
+        analysis_mode = self.influence_calc.analysis_mode
+        title = f'Team Interaction Analysis: Synergy vs Interference\n'
+        title += f'Sequence {int(sequence_number)} | {len(time_points)} Time Intervals | Mode: {analysis_mode.upper()}'
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
+        
+        # Set equal aspect ratio and limits
+        ax.set_xlim(min_val, max_val)
+        ax.set_ylim(min_val, max_val)
+        ax.set_aspect('equal', adjustable='box')
+        
+        # Grid
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Legend
+        ax.legend(loc='upper left', fontsize=10, framealpha=0.95)
+        
+        # Statistics box
+        stats_text = f'INTERACTION METRICS\n'
+        stats_text += f'{"─" * 30}\n'
+        stats_text += f'Correlation: r = {correlation:.3f}\n'
+        stats_text += f'Mean Deviation: {mean_deviation:.4f}\n'
+        stats_text += f'Std Deviation: {std_deviation:.4f}\n'
+        stats_text += f'\n'
+        stats_text += f'Synergy: {synergy_count}/{total_points} ({synergy_percentage:.1f}%)\n'
+        stats_text += f'Interference: {interference_count}/{total_points} ({100-synergy_percentage:.1f}%)'
+        
+        ax.text(0.98, 0.02, stats_text, 
+               transform=ax.transAxes, fontsize=10, fontfamily='monospace',
+               verticalalignment='bottom', horizontalalignment='right',
+               bbox=dict(boxstyle='round', facecolor='white', alpha=0.95, 
+                        edgecolor='black', linewidth=1.5))
+        
+        # Interpretation box
+        if correlation > 0.95:
+            interp = "Very High Correlation\nTeam performance highly\npredictable from individual\ncontributions"
+            interp_color = 'lightgreen'
+        elif correlation > 0.85:
+            interp = "High Correlation\nGood individual-to-team\ntransparency"
+            interp_color = 'lightgreen'
+        elif correlation > 0.7:
+            interp = "Moderate Correlation\nSome interaction effects\npresent"
+            interp_color = 'lightyellow'
+        else:
+            interp = "Low Correlation\nStrong interaction effects\n(coordination matters)"
+            interp_color = 'lightcoral'
+        
+        if mean_deviation > 0.01:
+            synergy_note = "\n\nSystematic SYNERGY:\nTeam creates more than\nsum of individual parts"
+            interp_color = 'lightgreen'
+        elif mean_deviation < -0.01:
+            synergy_note = "\n\nSystematic INTERFERENCE:\nPlayers hindering each\nother's contributions"
+            interp_color = 'lightcoral'
+        else:
+            synergy_note = "\n\nBalanced interaction:\nNo systematic bias"
+        
+        interp += synergy_note
+        
+        ax.text(0.02, 0.98, interp, 
+               transform=ax.transAxes, fontsize=10, fontweight='bold',
+               verticalalignment='top', horizontalalignment='left',
+               bbox=dict(boxstyle='round', facecolor=interp_color, alpha=0.9, 
+                        edgecolor='black', linewidth=1.5))
+        
+        plt.tight_layout()
+        
+        # Save or show
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Interaction analysis plot saved to: {save_path}")
+        else:
+            plt.show()
+        
+        plt.close()
+        
+        # Return metrics
+        return {
+            'correlation': correlation,
+            'mean_deviation': mean_deviation,
+            'std_deviation': std_deviation,
+            'synergy_count': synergy_count,
+            'interference_count': interference_count,
+            'synergy_percentage': synergy_percentage,
+            'total_points': total_points
+        }
 
     def generate_movie(self, movie_frames, output_path, sequence_number, verbose=True):
         """

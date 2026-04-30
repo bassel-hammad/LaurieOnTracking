@@ -83,7 +83,7 @@ def get_EPV_at_location(position,EPV,attack_direction,field_dimen=(106.,68.)):
         iy = (y+field_dimen[1]/2.-0.0001)/dy
         return EPV[int(iy),int(ix)]
     
-def calculate_epv_added( event_id, events, tracking_home, tracking_away, GK_numbers, EPV, params):
+def calculate_epv_added( event_id, events, tracking_home, tracking_away, GK_numbers, EPV, params, homeTeamStartLeft=True):
     """ calculate_epv_added
     
     Calculates the expected possession value added by a pass
@@ -97,6 +97,7 @@ def calculate_epv_added( event_id, events, tracking_home, tracking_away, GK_numb
         GK_numbers: tuple containing the player id of the goalkeepers for the (home team, away team)
         EPV: tuple Expected Possession value grid (loaded using load_EPV_grid() )
         params: Dictionary of pitch control model parameters (default model parameters can be generated using default_model_params() )
+        homeTeamStartLeft: bool, if True home team started left and attacks right (default True)
         
     Returrns
     -----------
@@ -110,8 +111,11 @@ def calculate_epv_added( event_id, events, tracking_home, tracking_away, GK_numb
     pass_frame = events.loc[event_id]['Start Frame']
     pass_team = events.loc[event_id].Team
     
-    # direction of play for atacking team (so we know whether to flip the EPV grid)
-    home_attack_direction = mio.find_playing_direction(tracking_home,'Home')
+    # Direction of play for attacking team based on homeTeamStartLeft
+    # After to_single_playing_direction():
+    #   - If homeTeamStartLeft=True: Home attacks right (+1), Away attacks left (-1)
+    #   - If homeTeamStartLeft=False: Home attacks left (-1), Away attacks right (+1)
+    home_attack_direction = 1 if homeTeamStartLeft else -1
     # Use backfilled velocities (consistent with pitch control generation)
     home_row = mpc._row_with_backfilled_velocities(tracking_home, pass_frame)
     away_row = mpc._row_with_backfilled_velocities(tracking_away, pass_frame)
@@ -147,7 +151,7 @@ def calculate_epv_added( event_id, events, tracking_home, tracking_away, GK_numb
 
     return EEPV_added, EPV_difference
 
-def find_max_value_added_target( event_id, events, tracking_home, tracking_away, GK_numbers, EPV, params ):
+def find_max_value_added_target( event_id, events, tracking_home, tracking_away, GK_numbers, EPV, params, homeTeamStartLeft=True ):
     """ find_max_value_added_target
     
     Finds the *maximum* expected possession value that could have been achieved for a pass (defined by the event_id) by searching the entire field for the best target.
@@ -173,8 +177,8 @@ def find_max_value_added_target( event_id, events, tracking_home, tracking_away,
     pass_frame = events.loc[event_id]['Start Frame']
     pass_team = events.loc[event_id].Team
     
-    # direction of play for atacking team (so we know whether to flip the EPV grid)
-    home_attack_direction = mio.find_playing_direction(tracking_home,'Home')
+    # Direction of play for attacking team based on homeTeamStartLeft
+    home_attack_direction = 1 if homeTeamStartLeft else -1
     if pass_team=='Home':
         attack_direction = home_attack_direction
         attacking_players = mpc.initialise_players(tracking_home.loc[pass_frame],'Home',params,GK_numbers[0])

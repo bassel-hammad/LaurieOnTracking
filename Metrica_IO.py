@@ -172,7 +172,7 @@ def load_player_mapping(DATADIR, game_id):
         with open(mapping_file, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"Player mapping file not found: {mapping_file}")
+        # Silently return None if mapping file not found
         return None
     except json.JSONDecodeError as e:
         print(f"Error reading player mapping file: {e}")

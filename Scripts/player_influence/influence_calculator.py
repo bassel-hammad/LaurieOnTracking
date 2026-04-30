@@ -34,6 +34,7 @@ class InfluenceCalculator:
         self.attacking_team = attacking_team
         self.defending_team = 'Away' if attacking_team == 'Home' else 'Home'
         self.analysis_mode = analysis_mode
+        self.sample_interval = 1.0  # Default 1-second intervals, can be overridden
         
         self.influence_results = []
         self.attacker_influences = {}
@@ -76,16 +77,19 @@ class InfluenceCalculator:
         if verbose:
             print(f"  Sequence time range: {start_time:.2f}s - {end_time:.2f}s")
         
-        # Generate 1-second intervals throughout the sequence
+        # Use configurable sample interval (default 1.0 second)
+        interval = getattr(self, 'sample_interval', 1.0)
+        
+        # Generate intervals throughout the sequence
         current_time = start_time
         interval_count = 0
         
-        while current_time + 1.0 <= end_time:
+        while current_time + interval <= end_time:
             if verbose and interval_count % 10 == 0:
                 print(f"  Processing interval {interval_count+1} (t={current_time:.2f}s)...")
             
             time_t = current_time
-            time_t1 = current_time + 1.0
+            time_t1 = current_time + interval
             
             # Find closest frame to time_t
             time_col = tracking_home['Time [s]']
@@ -99,14 +103,14 @@ class InfluenceCalculator:
             if result:
                 self.influence_results.append(result)
             
-            current_time += 1.0
+            current_time += interval
             interval_count += 1
         
         # Aggregate influences
         self._aggregate_influences()
         
         if verbose:
-            print(f"\nAnalysis complete: {len(self.influence_results)} 1-second intervals analyzed")
+            print(f"\nAnalysis complete: {len(self.influence_results)} intervals analyzed (interval={interval:.1f}s)")
             print(f"  Total duration: {end_time - start_time:.2f}s")
         
         return self.influence_results
@@ -261,16 +265,21 @@ class InfluenceCalculator:
         away_t1_bf = self._backfill_interpolated_row(away_t1)
         
         # Baseline PC at time t
-        PC_baseline, xgrid, ygrid = self.pc_calculator.calculate_surface(
-            home_t_bf, away_t_bf, 
-            attacking_half_only=True, 
+        # For defending mode, analyze defending half; for attacking mode, analyze attacking half
+        analyze_attacking_half = (self.analysis_mode == 'attacking')
+        
+        # Always pass (home_row, away_row) - let calculate_surface_with_hybrid handle the logic
+        PC_baseline, xgrid, ygrid = self.pc_calculator.calculate_surface_with_hybrid(
+            home_t_bf, away_t_bf,
+            attacking_half_only=analyze_attacking_half,
             attacking_team=self.attacking_team
         )
         
         # Actual PC at time t+1
-        PC_actual, _, _ = self.pc_calculator.calculate_surface(
+        # Always pass (home_row, away_row) - let calculate_surface_with_hybrid handle the logic
+        PC_actual, _, _ = self.pc_calculator.calculate_surface_with_hybrid(
             home_t1_bf, away_t1_bf,
-            attacking_half_only=True,
+            attacking_half_only=analyze_attacking_half,
             attacking_team=self.attacking_team
         )
         
@@ -295,13 +304,9 @@ class InfluenceCalculator:
         # Calculate individual influences
         player_influences = {}
         
-        # For away team attacking, we need baseline in away perspective
-        if self.attacking_team == 'Away':
-            PC_baseline_attack = 1 - PC_baseline
-            PC_actual_attack = 1 - PC_actual
-        else:
-            PC_baseline_attack = PC_baseline
-            PC_actual_attack = PC_actual
+        # No need to invert - calculate_surface_with_hybrid already returns correct perspective
+        PC_baseline_attack = PC_baseline
+        PC_actual_attack = PC_actual
         
         # Analyze based on mode
         if self.analysis_mode == 'attacking':
@@ -402,19 +407,23 @@ class InfluenceCalculator:
                 hybrid_additive[f'{player_id}_speed'] = row_t1_bf[f'{player_id}_speed']
             
             # Calculate PC with only this player moved forward
+            # hybrid_additive is the attacking team, opponent_row_bf is defending team
+            # Need to pass as (home, away) not (attack, defend)
             if self.attacking_team == 'Home':
-                PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface(
+                # Home attacking: hybrid_additive is Home, opponent_row_bf is Away
+                PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface_with_hybrid(
                     hybrid_additive, opponent_row_bf,
                     attacking_half_only=True,
-                    attacking_team=self.attacking_team
+                    attacking_team='Home'
                 )
             else:
-                PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface(
+                # Away attacking: hybrid_additive is Away, opponent_row_bf is Home
+                # Pass as (home, away)
+                PC_hybrid_add, _, _ = self.pc_calculator.calculate_surface_with_hybrid(
                     opponent_row_bf, hybrid_additive,
                     attacking_half_only=True,
-                    attacking_team=self.attacking_team
+                    attacking_team='Away'
                 )
-                PC_hybrid_add = 1 - PC_hybrid_add
             
             ΔPC_additive = PC_hybrid_add - PC_baseline
         
@@ -437,21 +446,24 @@ class InfluenceCalculator:
             
             # Calculate PC with this player frozen at t
             # For defending analysis, we measure opponent's control
+            # calculate_surface_with_hybrid expects (home_row, away_row, attacking_team)
             if self.attacking_team == 'Home':
-                # Attacking team is Home, so defenders are Away
-                PC_frozen, _, _ = self.pc_calculator.calculate_surface(
+                # Home attacking, Away defending
+                # opponent_row_t1_bf = Home (attackers), hybrid_frozen = Away (defenders with one frozen)
+                PC_frozen, _, _ = self.pc_calculator.calculate_surface_with_hybrid(
                     opponent_row_t1_bf, hybrid_frozen,
                     attacking_half_only=True,
-                    attacking_team=self.attacking_team
+                    attacking_team='Home'
                 )
             else:
-                # Attacking team is Away, so defenders are Home
-                PC_frozen, _, _ = self.pc_calculator.calculate_surface(
+                # Away attacking, Home defending
+                # opponent_row_t1_bf = Away (attackers), hybrid_frozen = Home (defenders with one frozen)
+                # Pass as (home, away)
+                PC_frozen, _, _ = self.pc_calculator.calculate_surface_with_hybrid(
                     hybrid_frozen, opponent_row_t1_bf,
                     attacking_half_only=True,
-                    attacking_team=self.attacking_team
+                    attacking_team='Away'
                 )
-                PC_frozen = 1 - PC_frozen
             
             # Necessity = what we would lose without this movement
             # For defenders: if freezing them increases attacking PC, they were good at defending

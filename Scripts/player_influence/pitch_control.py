@@ -19,7 +19,7 @@ from .config import Config
 class PitchControlCalculator:
     """Handles pitch control calculations."""
     
-    def __init__(self, gk_numbers, params=None):
+    def __init__(self, gk_numbers, params=None, homeTeamStartLeft=True):
         """
         Initialize the pitch control calculator.
         
@@ -29,9 +29,13 @@ class PitchControlCalculator:
             Goalkeeper jersey numbers [home_GK, away_GK]
         params : dict, optional
             Pitch control model parameters (default: mpc.default_model_params())
+        homeTeamStartLeft : bool, optional
+            If True, home team started left and attacks right (x > 0)
+            If False, home team started right and attacks left (x < 0)
         """
         self.gk_numbers = gk_numbers
         self.params = params or mpc.default_model_params()
+        self.homeTeamStartLeft = homeTeamStartLeft
         
         # Pre-calculate grid
         self._setup_grid()
@@ -89,14 +93,28 @@ class PitchControlCalculator:
                 
                 # Only calculate in the attacking half
                 if attacking_half_only:
-                    if attacking_team == 'Home' and target_position[0] <= 0:
-                        PPCFa[ii, jj] = np.nan
-                        PPCFd[ii, jj] = np.nan
-                        continue
-                    elif attacking_team == 'Away' and target_position[0] >= 0:
-                        PPCFa[ii, jj] = np.nan
-                        PPCFd[ii, jj] = np.nan
-                        continue
+                    if attacking_team == 'Home':
+                        # If homeTeamStartLeft=True, home attacks right (x > 0), skip left half
+                        # If homeTeamStartLeft=False, home attacks left (x < 0), skip right half
+                        if self.homeTeamStartLeft and target_position[0] <= 0:
+                            PPCFa[ii, jj] = np.nan
+                            PPCFd[ii, jj] = np.nan
+                            continue
+                        elif not self.homeTeamStartLeft and target_position[0] >= 0:
+                            PPCFa[ii, jj] = np.nan
+                            PPCFd[ii, jj] = np.nan
+                            continue
+                    elif attacking_team == 'Away':
+                        # If homeTeamStartLeft=True, away attacks left (x < 0), skip right half
+                        # If homeTeamStartLeft=False, away attacks right (x > 0), skip left half
+                        if self.homeTeamStartLeft and target_position[0] >= 0:
+                            PPCFa[ii, jj] = np.nan
+                            PPCFd[ii, jj] = np.nan
+                            continue
+                        elif not self.homeTeamStartLeft and target_position[0] <= 0:
+                            PPCFa[ii, jj] = np.nan
+                            PPCFd[ii, jj] = np.nan
+                            continue
                 
                 PPCFa[ii, jj], PPCFd[ii, jj] = mpc.calculate_pitch_control_at_target(
                     target_position, attacking_players, defending_players, ball_pos, self.params
@@ -104,17 +122,17 @@ class PitchControlCalculator:
         
         return PPCFa, self.xgrid, self.ygrid
     
-    def calculate_surface_with_hybrid(self, attack_row, defend_row, attacking_team='Home',
+    def calculate_surface_with_hybrid(self, home_row, away_row, attacking_team='Home',
                                        attacking_half_only=True):
         """
-        Calculate pitch control with specified attacking/defending rows.
+        Calculate pitch control with specified home/away rows.
         
         Parameters
         ----------
-        attack_row : Series
-            Attacking team player position data
-        defend_row : Series
-            Defending team player position data
+        home_row : Series
+            Home team player position data
+        away_row : Series
+            Away team player position data
         attacking_team : str
             'Home' or 'Away'
         attacking_half_only : bool
@@ -126,10 +144,10 @@ class PitchControlCalculator:
             (PPCF, xgrid, ygrid)
         """
         if attacking_team == 'Home':
-            return self.calculate_surface(attack_row, defend_row, attacking_half_only, attacking_team)
+            return self.calculate_surface(home_row, away_row, attacking_half_only, attacking_team)
         else:
-            # For Away team, swap the order
-            PPCF, xgrid, ygrid = self.calculate_surface(defend_row, attack_row, attacking_half_only, attacking_team)
+            # For Away team, keep same order but will invert result
+            PPCF, xgrid, ygrid = self.calculate_surface(home_row, away_row, attacking_half_only, attacking_team)
             # Invert for away team perspective
             return 1 - PPCF, xgrid, ygrid
     

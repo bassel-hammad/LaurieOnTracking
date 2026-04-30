@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 # set up initial path to data
 DATADIR = 'Sample Data'
-game_id = 2 # let's look at sample match 2
+game_id = 10517 # let's look at sample match 2
 
 # read in the event data
 events = mio.read_event_data(DATADIR,game_id)

@@ -67,6 +67,7 @@ desktop.ini
 Metrica_Output/
 PFF Data/
 Sample Data/
+*.xlsx
 
 # Large raw tracking/event files (if present outside the folders above)
 *.jsonl

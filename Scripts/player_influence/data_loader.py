@@ -6,6 +6,7 @@ Handles loading tracking data, event data, and preprocessing for analysis.
 
 import sys
 import os
+import json
 import pandas as pd
 import numpy as np
 
@@ -38,8 +39,8 @@ class DataLoader:
         self.events = None
         self.tracking_home = None
         self.tracking_away = None
-        self.player_mapping = None
         self.gk_numbers = None
+        self.homeTeamStartLeft = None
         
     def load_all(self, verbose=True):
         """
@@ -57,6 +58,21 @@ class DataLoader:
         """
         if verbose:
             print("Loading data...")
+        
+        # Load metadata to get homeTeamStartLeft
+        # Use absolute path from workspace root
+        workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        metadata_path = os.path.join(workspace_root, 'PFF Data', 'Meta Data', f'{self.game_id}.json')
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)[0]
+            self.homeTeamStartLeft = metadata.get('homeTeamStartLeft', True)
+            if verbose:
+                print(f"homeTeamStartLeft: {self.homeTeamStartLeft}")
+        except FileNotFoundError:
+            if verbose:
+                print(f"Warning: Metadata file not found at {metadata_path}, defaulting to homeTeamStartLeft=True")
+            self.homeTeamStartLeft = True
         
         # Load event data
         self.events = mio.read_event_data(self.data_dir, self.game_id)
@@ -89,12 +105,6 @@ class DataLoader:
         
         if verbose:
             print(f"Goalkeepers: Home #{self.gk_numbers[0]}, Away #{self.gk_numbers[1]}")
-        
-        # Try to load player mapping
-        try:
-            self.player_mapping = mio.load_player_mapping(self.data_dir, self.game_id)
-        except:
-            self.player_mapping = None
         
         return self.events, self.tracking_home, self.tracking_away
     

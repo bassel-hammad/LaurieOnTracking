@@ -18,7 +18,7 @@ from datetime import datetime
 
 class PFFToMetricaAdapter:
     
-    def __init__(self, pff_data_dir, output_dir, game_id="10517"):
+    def __init__(self, pff_data_dir, output_dir, game_id):
         """
         Initialize PFF to Metrica adapter
         
@@ -28,12 +28,12 @@ class PFFToMetricaAdapter:
             Path to PFF data directory
         output_dir : str 
             Path to output directory for Metrica format files
-        game_id : str
-            Game identifier 
+        game_id : str or int
+            Game identifier (e.g., '10517', '3812', etc.)
         """
         self.pff_data_dir = pff_data_dir
         self.output_dir = output_dir
-        self.game_id = game_id
+        self.game_id = str(game_id)  # Ensure it's a string for file paths
         self.field_length = 105.0  # meters (from metadata)
         self.field_width = 68.0    # meters (from metadata)
         self.original_fps = 29.97  # from metadata
@@ -49,7 +49,7 @@ class PFFToMetricaAdapter:
         print(f"PFF to Metrica Adapter initialized")
         print(f"Input: {pff_data_dir}")
         print(f"Output: {output_dir}")
-        print(f"Game: FIFA World Cup Final 2022 (ID: {game_id})")
+        print(f"Game ID: {game_id}")
         print(f"Processing: First 2 periods only (excludes extra time)")
 
     def normalize_coordinates(self, x_meters, y_meters):
@@ -1003,13 +1003,16 @@ class PFFToMetricaAdapter:
         return tracking_home, tracking_away
 
     def create_metrica_tracking_format(self, tracking_df, team_name):
-        """Create Metrica-style tracking data with 3-row header"""
+        """Create Metrica-style tracking data with 3-row header using player names"""
         if tracking_df is None:
             return None
         
         # Extract player jersey numbers (keep all players)
         player_columns = [col for col in tracking_df.columns if col.startswith(f'{team_name}_') and col.endswith('_x')]
         jersey_numbers = [col.split('_')[1] for col in player_columns]
+        
+        # Get player names for this team
+        team_player_names = self.player_names.get(team_name, {})
         
         print(f" {team_name} team: {len(jersey_numbers)} players ({jersey_numbers})")
         
@@ -1020,16 +1023,20 @@ class PFFToMetricaAdapter:
             row1.extend([team_name, '', '', ''])  # Team name for x, y, visibility, pff_speed
         row1.extend(['', ''])  # Ball x and y
         
-        # Row 2: Jersey numbers  
+        # Row 2: Player names (or jersey numbers if name not available)
         row2 = ['', '', '']  # Period, Frame, Time
         for jersey in jersey_numbers:
-            row2.extend([jersey, '', '', ''])  # Jersey number for x, y, visibility, pff_speed
+            player_name = team_player_names.get(str(jersey), jersey)
+            row2.extend([player_name, '', '', ''])  # Player name for x, y, visibility, pff_speed
         row2.extend(['', ''])  # Ball x and y
         
-        # Row 3: Column headers
+        # Row 3: Column headers (using player names or jersey numbers)
         row3 = ['Period', 'Frame', 'Time [s]']
         for jersey in jersey_numbers:
-            row3.extend([f'Player{jersey}', '', 'visibility', 'pff_speed'])  # PlayerX for x, y, visibility, pff_speed
+            player_name = team_player_names.get(str(jersey), f'Player{jersey}')
+            # Clean player name for column header (replace spaces with underscores)
+            clean_name = player_name.replace(' ', '_')
+            row3.extend([clean_name, '', 'visibility', 'pff_speed'])
         row3.extend(['Ball', ''])  # Ball for x and y
         
         # Prepare data rows
@@ -1102,6 +1109,15 @@ class PFFToMetricaAdapter:
         print("=" * 60)
         
         try:
+            # Extract player names from tracking data first
+            tracking_file = os.path.join(self.pff_data_dir, 'Tracking Data', f'{self.game_id}.jsonl')
+            if os.path.exists(tracking_file):
+                print(" Extracting player names from tracking data...")
+                player_name_info = self.extract_player_names_from_tracking(tracking_file)
+                self.player_names['Home'] = player_name_info['Home']
+                self.player_names['Away'] = player_name_info['Away']
+                print(f"  Found {len(self.player_names['Home'])} home players, {len(self.player_names['Away'])} away players")
+            
             # Convert event data (without frame mapping)
             events_df = self.convert_events_data()
             
@@ -1133,13 +1149,24 @@ class PFFToMetricaAdapter:
 
 def main():
     """Main function to run the conversion"""
-    print(" FIFA World Cup Final 2022 - PFF to Metrica Converter")
+    print(" PFF to Metrica Format Converter")
     print("=" * 60)
+    
+    # Get game ID from user or command line
+    import sys
+    if len(sys.argv) > 1:
+        game_id = sys.argv[1]
+    else:
+        game_id = input("Enter game ID (e.g., 10517, 3812, etc.): ").strip()
+        if not game_id:
+            print("ERROR: Game ID is required!")
+            return
     
     # Configuration
     pff_data_dir = "PFF Data"
     output_dir = "Sample Data"
-    game_id = "10517"
+    
+    print(f"\nConverting game {game_id}...")
     
     # Smart sampling approach: Process full match efficiently
     # No frame limit needed - intelligent sampling handles efficiency
@@ -1150,7 +1177,7 @@ def main():
     success = adapter.run_conversion()
     
     if success:
-        print("\n PFF to Metrica conversion completed successfully!")
+        print(f"\n PFF to Metrica conversion completed successfully for game {game_id}!")
     else:
         print("\n Conversion failed. Check error messages above.")
 

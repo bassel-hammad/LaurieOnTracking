@@ -45,6 +45,9 @@ def calc_player_velocities(team, smoothing=True, filter_='Savitzky-Golay', windo
     # index of first frame in second half
     second_half_idx = team[team.Period==2].index.min()
     
+    # Collect all velocity columns in a dictionary to add at once
+    velocity_columns = {}
+    
     # estimate velocities for players in team
     for player in player_ids: # cycle through players individually
         # difference player positions in timestep dt to get unsmoothed estimate of velicity
@@ -75,10 +78,13 @@ def calc_player_velocities(team, smoothing=True, filter_='Savitzky-Golay', windo
                 vy.loc[second_half_idx:] = np.convolve( vy.loc[second_half_idx:] , ma_window, mode='same' ) 
                 
         
-        # put player speed in x,y direction, and total speed back in the data frame
-        team[player + "_vx"] = vx
-        team[player + "_vy"] = vy
-        team[player + "_speed"] = np.sqrt( vx**2 + vy**2 )
+        # Store player speed in x,y direction, and total speed in dictionary
+        velocity_columns[player + "_vx"] = vx
+        velocity_columns[player + "_vy"] = vy
+        velocity_columns[player + "_speed"] = np.sqrt( vx**2 + vy**2 )
+    
+    # Add all velocity columns at once using concat to avoid DataFrame fragmentation
+    team = pd.concat([team, pd.DataFrame(velocity_columns, index=team.index)], axis=1)
 
     return team
 

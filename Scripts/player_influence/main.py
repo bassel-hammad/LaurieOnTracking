@@ -168,8 +168,8 @@ def run_influence_analysis(data_loader, sequence_events, attacking_team, defendi
     return influence_calc, pc_calculator
 
 
-def generate_movie(data_loader, influence_calc, game_id, sequence_number, start_time, end_time):
-    """Generate the visualization movie."""
+def generate_visualizations(data_loader, influence_calc, game_id, sequence_number, start_time, end_time):
+    """Generate all visualizations: plots and movie."""
     print("=" * 70)
     print("GENERATING VISUALIZATIONS")
     print("=" * 70)
@@ -177,6 +177,26 @@ def generate_movie(data_loader, influence_calc, game_id, sequence_number, start_
     
     # Create visualizer
     visualizer = Visualizer(data_loader, influence_calc)
+    
+    # Generate interaction analysis plot
+    print("Generating interaction analysis plot...")
+    interaction_filename = f"sequence_{int(sequence_number)}_interaction_{influence_calc.analysis_mode}.png"
+    interaction_path = Config.get_output_path(interaction_filename)
+    metrics = visualizer.generate_interaction_analysis_plot(sequence_number, save_path=interaction_path)
+    
+    if metrics:
+        print(f"  Correlation: {metrics['correlation']:.3f}")
+        print(f"  Synergy: {metrics['synergy_percentage']:.1f}% of intervals")
+        print(f"  Mean Deviation: {metrics['mean_deviation']:.4f}")
+    print()
+    
+    # Generate correlation plot (if in attacking mode)
+    if influence_calc.analysis_mode == 'attacking':
+        print("Generating correlation plot...")
+        correlation_filename = f"sequence_{int(sequence_number)}_correlation_{influence_calc.analysis_mode}.png"
+        correlation_path = Config.get_output_path(correlation_filename)
+        visualizer.generate_correlation_plot(sequence_number, save_path=correlation_path)
+        print()
     
     # Get movie frames
     movie_frames = data_loader.get_movie_frames(start_time, end_time)
@@ -219,8 +239,8 @@ def main():
         data_loader, sequence_events, attacking_team, defending_team, analysis_mode
     )
     
-    # Generate movie
-    generate_movie(data_loader, influence_calc, game_id, sequence_number, start_time, end_time)
+    # Generate visualizations (plots and movie)
+    generate_visualizations(data_loader, influence_calc, game_id, sequence_number, start_time, end_time)
     
     print("=" * 70)
     print("ANALYSIS COMPLETE!")
