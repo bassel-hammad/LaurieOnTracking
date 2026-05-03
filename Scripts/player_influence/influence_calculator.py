@@ -13,7 +13,8 @@ from .pitch_control import PitchControlCalculator
 class InfluenceCalculator:
     """Calculates individual player influence on pitch control."""
     
-    def __init__(self, data_loader, pc_calculator, attacking_team='Home', analysis_mode='attacking'):
+    def __init__(self, data_loader, pc_calculator, attacking_team='Home', analysis_mode='attacking', 
+                 epv_grid=None):
         """
         Initialize the influence calculator.
         
@@ -28,6 +29,10 @@ class InfluenceCalculator:
         analysis_mode : str
             'attacking' - Analyze attackers using additive approach
             'defending' - Analyze defenders using necessity approach
+        epv_grid : ndarray, optional
+            Expected Possession Value grid of shape (32, 50). If provided,
+            influence scores will be weighted by EPV. Should be normalized
+            to [0, 1] range. Default is None (uniform weighting).
         """
         self.data_loader = data_loader
         self.pc_calculator = pc_calculator
@@ -35,6 +40,7 @@ class InfluenceCalculator:
         self.defending_team = 'Away' if attacking_team == 'Home' else 'Home'
         self.analysis_mode = analysis_mode
         self.sample_interval = 1.0  # Default 1-second intervals, can be overridden
+        self.epv_grid = epv_grid
         
         self.influence_results = []
         self.attacker_influences = {}
@@ -476,7 +482,40 @@ class InfluenceCalculator:
         else:  # use_necessity
             ΔPC = ΔPC_necessity
         
-        return {
+        # Compute EPV-weighted metrics if EPV grid is available
+        epv_weighted_metrics = {}
+        if self.epv_grid is not None:
+            # Get EPV grid, flipped if Away team is attacking
+            # EPV grid is designed for Home attacking direction
+            # For Away attacking (opposite direction), flip horizontally
+            epv_grid_to_use = self.epv_grid.copy()
+            if self.attacking_team == 'Away':
+                epv_grid_to_use = np.fliplr(epv_grid_to_use)
+            
+            # Apply EPV weighting to delta_PC surfaces
+            if use_additive and ΔPC_additive is not None:
+                epv_weighted_pc = epv_grid_to_use * ΔPC_additive
+                epv_weighted_metrics['epv_weighted_total_additive'] = np.nansum(np.abs(epv_weighted_pc))
+                epv_weighted_metrics['epv_weighted_positive_additive'] = np.nansum(
+                    np.where(epv_weighted_pc > 0, epv_weighted_pc, 0)
+                )
+                epv_weighted_metrics['epv_weighted_negative_additive'] = np.nansum(
+                    np.where(epv_weighted_pc < 0, epv_weighted_pc, 0)
+                )
+                epv_weighted_metrics['epv_weighted_net_additive'] = np.nansum(epv_weighted_pc)
+            
+            if use_necessity and ΔPC_necessity is not None:
+                epv_weighted_pc = epv_grid_to_use * ΔPC_necessity
+                epv_weighted_metrics['epv_weighted_total_necessity'] = np.nansum(np.abs(epv_weighted_pc))
+                epv_weighted_metrics['epv_weighted_positive_necessity'] = np.nansum(
+                    np.where(epv_weighted_pc > 0, epv_weighted_pc, 0)
+                )
+                epv_weighted_metrics['epv_weighted_negative_necessity'] = np.nansum(
+                    np.where(epv_weighted_pc < 0, epv_weighted_pc, 0)
+                )
+                epv_weighted_metrics['epv_weighted_net_necessity'] = np.nansum(epv_weighted_pc)
+        
+        result_dict = {
             # Primary metrics (unified interface)
             'delta_PC': ΔPC,
             'total_influence': np.nansum(np.abs(ΔPC)),
@@ -503,6 +542,11 @@ class InfluenceCalculator:
             'team': team_type,
             'approach': 'additive' if use_additive else 'necessity'
         }
+        
+        # Add EPV-weighted metrics to result
+        result_dict.update(epv_weighted_metrics)
+        
+        return result_dict
     
     def _aggregate_influences(self):
         """Aggregate player influences across all frames for BOTH approaches."""
@@ -530,6 +574,15 @@ class InfluenceCalculator:
                         'positive_necessity': 0.0,
                         'negative_necessity': 0.0,
                         'net_necessity': 0.0,
+                        # EPV-weighted variants
+                        'epv_weighted_total_additive': 0.0,
+                        'epv_weighted_positive_additive': 0.0,
+                        'epv_weighted_negative_additive': 0.0,
+                        'epv_weighted_net_additive': 0.0,
+                        'epv_weighted_total_necessity': 0.0,
+                        'epv_weighted_positive_necessity': 0.0,
+                        'epv_weighted_negative_necessity': 0.0,
+                        'epv_weighted_net_necessity': 0.0,
                         # Legacy (for backward compatibility)
                         'total': 0.0,
                         'positive': 0.0,
@@ -550,6 +603,19 @@ class InfluenceCalculator:
                     target[player_id]['positive_necessity'] += influence_data['positive_necessity']
                     target[player_id]['negative_necessity'] += influence_data['negative_necessity']
                     target[player_id]['net_necessity'] += influence_data['net_necessity']
+                
+                # EPV-weighted aggregation
+                if influence_data.get('epv_weighted_total_additive') is not None:
+                    target[player_id]['epv_weighted_total_additive'] += influence_data['epv_weighted_total_additive']
+                    target[player_id]['epv_weighted_positive_additive'] += influence_data['epv_weighted_positive_additive']
+                    target[player_id]['epv_weighted_negative_additive'] += influence_data['epv_weighted_negative_additive']
+                    target[player_id]['epv_weighted_net_additive'] += influence_data['epv_weighted_net_additive']
+                
+                if influence_data.get('epv_weighted_total_necessity') is not None:
+                    target[player_id]['epv_weighted_total_necessity'] += influence_data['epv_weighted_total_necessity']
+                    target[player_id]['epv_weighted_positive_necessity'] += influence_data['epv_weighted_positive_necessity']
+                    target[player_id]['epv_weighted_negative_necessity'] += influence_data['epv_weighted_negative_necessity']
+                    target[player_id]['epv_weighted_net_necessity'] += influence_data['epv_weighted_net_necessity']
                 
                 # Legacy (unified metrics - work for both approaches)
                 target[player_id]['total'] += influence_data['total_influence']

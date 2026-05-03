@@ -28,6 +28,8 @@ import Metrica_IO as mio
 import Metrica_Velocities as mvel
 import Metrica_PitchControl as mpc
 
+from Scripts.player_influence.epv_weighting import EPVWeighting
+
 from Scripts.player_influence.config import Config
 from Scripts.player_influence.data_loader import DataLoader
 from Scripts.player_influence.pitch_control import PitchControlCalculator
@@ -37,7 +39,7 @@ from Scripts.player_influence.influence_calculator import InfluenceCalculator
 class FullGameInfluenceAnalyzer:
     """Analyzes player influence across an entire game."""
     
-    def __init__(self, game_id, sample_interval=1.0, influence_type='additive'):
+    def __init__(self, game_id, sample_interval=1.0, influence_type='additive', weighting_mode='original'):
         """
         Initialize the analyzer.
         
@@ -53,6 +55,9 @@ class FullGameInfluenceAnalyzer:
         self.game_id = game_id
         self.sample_interval = sample_interval
         self.influence_type = influence_type
+        # weighting_mode: 'original' | 'epv'
+        self.weighting_mode = weighting_mode
+        self.epv_grid = None
         
         # Data containers
         self.data_loader = None
@@ -137,6 +142,16 @@ class FullGameInfluenceAnalyzer:
         
         # Build tracking column to player_id mapping
         self._build_tracking_column_mapping()
+
+        # Load EPV grid once if EPV weighting requested
+        if getattr(self, 'weighting_mode', 'original') == 'epv':
+            try:
+                epv_w = EPVWeighting()
+                self.epv_grid = epv_w.get_epv_grid(normalized=True)
+                print(f"Loaded EPV grid for weighting: shape {self.epv_grid.shape}")
+            except Exception as e:
+                print(f"Warning: failed to load EPV grid for EPV weighting: {e}")
+                self.epv_grid = None
     
     
     def extract_event_statistics(self):
@@ -390,7 +405,7 @@ class FullGameInfluenceAnalyzer:
     def analyze_all_sequences(self):
         """Analyze player influence for all sequences in the game."""
         print("\n" + "=" * 70)
-        print(f"ANALYZING {self.influence_type.upper()} INFLUENCE BY SEQUENCE")
+        print(f"ANALYZING {self.influence_type.upper()} INFLUENCE BY SEQUENCE (WEIGHTING: {self.weighting_mode.upper()})")
         print("=" * 70)
         
         # Create pitch control calculator
@@ -499,7 +514,8 @@ class FullGameInfluenceAnalyzer:
             influence_calc = InfluenceCalculator(
                 self.data_loader, pc_calculator,
                 attacking_team=attacking_team,
-                analysis_mode=analysis_mode
+                analysis_mode=analysis_mode,
+                epv_grid=(self.epv_grid if getattr(self, 'weighting_mode', 'original') == 'epv' else None)
             )
             influence_calc.sample_interval = self.sample_interval
             
@@ -517,10 +533,18 @@ class FullGameInfluenceAnalyzer:
                 for player_key, influence in result['player_influences'].items():
                     player_id = self._normalize_player_id(player_key)
                     
-                    if self.influence_type == 'additive':
-                        value = influence['net_additive'] if influence['net_additive'] is not None else 0.0
+                    # Select metric based on weighting mode and influence type
+                    if self.weighting_mode == 'epv':
+                        if self.influence_type == 'additive':
+                            value = influence.get('epv_weighted_net_additive', 0.0)
+                        else:
+                            value = influence.get('epv_weighted_net_necessity', 0.0)
                     else:
-                        value = influence['net_necessity'] if influence['net_necessity'] is not None else 0.0
+                        # Original (uniform) weighting
+                        if self.influence_type == 'additive':
+                            value = influence['net_additive'] if influence['net_additive'] is not None else 0.0
+                        else:
+                            value = influence['net_necessity'] if influence['net_necessity'] is not None else 0.0
                     
                     transition_data[player_id] = value
                 
@@ -542,7 +566,7 @@ class FullGameInfluenceAnalyzer:
     def export_to_excel(self, output_path=None):
         """Export all results to an Excel file."""
         if output_path is None:
-            output_path = f'player_influence_analysis_{self.influence_type}_match_{self.game_id}.xlsx'
+            output_path = os.path.join('Metrica_Output', 'Full Match Analysis', f'player_influence_analysis_{self.influence_type}_{self.weighting_mode}_match_{self.game_id}.xlsx')
         
         print("\n" + "=" * 70)
         print(f"EXPORTING RESULTS TO: {output_path}")
@@ -740,23 +764,36 @@ def get_user_inputs():
     else:
         print("Invalid choice, defaulting to 1 second interval")
         sample_interval = 1.0
+
+    # Get weighting mode
+    print("\nSelect spatial weighting mode:")
+    print("  1. Original (uniform integration)")
+    print("  2. EPV-weighted (weight by EPV grid)")
+    weighting_input = input("Enter your choice (1 or 2): ").strip()
+    if weighting_input == '1':
+        weighting_mode = 'original'
+    elif weighting_input == '2':
+        weighting_mode = 'epv'
+    else:
+        print("Invalid choice, defaulting to original weighting")
+        weighting_mode = 'original'
     
     print(f"\nConfiguration:")
     print(f"  Match ID: {game_id}")
     print(f"  Influence Type: {influence_type.upper()}")
     print(f"  Sample Interval: {sample_interval} seconds")
+    print(f"  Weighting Mode: {weighting_mode.upper()}")
     print()
-    
-    return game_id, sample_interval, influence_type
+    return game_id, sample_interval, influence_type, weighting_mode
 
 
 def main():
     """Main entry point."""
     # Get user inputs
-    game_id, sample_interval, influence_type = get_user_inputs()
+    game_id, sample_interval, influence_type, weighting_mode = get_user_inputs()
     
     # Create analyzer
-    analyzer = FullGameInfluenceAnalyzer(game_id, sample_interval, influence_type)
+    analyzer = FullGameInfluenceAnalyzer(game_id, sample_interval, influence_type, weighting_mode=weighting_mode)
     
     # Load data
     analyzer.load_data()
