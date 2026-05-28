@@ -757,8 +757,18 @@ def main():
     print()
     
     # File paths
-    influence_file = f'player_influence_analysis_additive_match_{match_id}.xlsx'
-    epv_file = f'epv_analysis_match_{match_id}.xlsx'
+    influence_file = os.path.join(
+        'Metrica_Output',
+        'Full Match Analysis',
+        f'player_influence_analysis_additive_epv_match_{match_id}.xlsx'
+    )
+    epv_file = os.path.join(
+        'Metrica_Output',
+        'Full Match Analysis',
+        f'epv_analysis_match_{match_id}.xlsx'
+    )
+    if not os.path.exists(epv_file):
+        epv_file = f'epv_analysis_match_{match_id}.xlsx'
     
     # Check if files exist
     if not os.path.exists(influence_file):
