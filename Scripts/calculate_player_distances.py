@@ -105,12 +105,20 @@ def calculate_player_distances(tracking_data, team_name='Home', name_to_jersey=N
     summary : DataFrame
         Summary with player distances and minutes played
     """
+    # Restrict calculations to regulation time only.
+    # The source files include extra-time periods, but we only want first and second half here.
+    tracking_data = tracking_data[tracking_data['Period'] <= 2].copy()
+
     # Get list of unique players
     players = np.unique([c.split('_')[1] for c in tracking_data.columns if c[:len(team_name)] == team_name])
     
     # Create summary dataframe
     summary = pd.DataFrame(index=players)
     
+    # Use the actual time deltas in the tracking file instead of assuming a fixed frame rate.
+    # This keeps the distance estimate correct when the data is irregularly sampled or has gaps.
+    time_deltas = tracking_data['Time [s]'].diff().fillna(0)
+
     # Calculate minutes played for each player
     print(f"\nCalculating statistics for {team_name} team...")
     player_ids = []
@@ -118,6 +126,19 @@ def calculate_player_distances(tracking_data, team_name='Home', name_to_jersey=N
     distance = []
     
     for player in players:
+        # Determine which raw source columns actually exist for this player.
+        # Minutes and distance should only be counted when the player has real tracking data.
+        source_columns = [
+            f'{team_name}_{player}_x',
+            f'{team_name}_{player}_y',
+            f'{team_name}_{player}_visibility',
+            f'{team_name}_{player}_pff_speed',
+        ]
+        active_mask = pd.Series(False, index=tracking_data.index)
+        for source_column in source_columns:
+            if source_column in tracking_data.columns:
+                active_mask = active_mask | tracking_data[source_column].notna()
+
         # Get jersey number if mapping is available, otherwise use player identifier
         if name_to_jersey and team_name in name_to_jersey:
             jersey_num = None
@@ -166,11 +187,13 @@ def calculate_player_distances(tracking_data, team_name='Home', name_to_jersey=N
             player_ids.append(f"{team_name}_{player}")
         # Calculate minutes played
         x_column = f'{team_name}_{player}_x'
-        if x_column in tracking_data.columns:
-            last_idx = tracking_data[x_column].last_valid_index()
-            first_idx = tracking_data[x_column].first_valid_index()
+        if active_mask.any():
+            last_idx = active_mask[active_mask].index[-1]
+            first_idx = active_mask[active_mask].index[0]
             if last_idx is not None and first_idx is not None:
-                player_minutes = (last_idx - first_idx + 1) / 25 / 60.0
+                first_time = tracking_data.loc[first_idx, 'Time [s]']
+                last_time = tracking_data.loc[last_idx, 'Time [s]']
+                player_minutes = (last_time - first_time) / 60.0
             else:
                 player_minutes = 0
         else:
@@ -180,9 +203,9 @@ def calculate_player_distances(tracking_data, team_name='Home', name_to_jersey=N
         # Calculate distance covered
         speed_column = f'{team_name}_{player}_speed'
         if speed_column in tracking_data.columns:
-            # Sum of distance = sum of (speed * time_interval)
-            # With 25 fps, time interval is 1/25 seconds
-            player_distance = tracking_data[speed_column].sum() / 25.0 / 1000.0  # Convert to km
+            # Sum of distance = sum(speed * delta_time)
+            # Speed is in m/s and delta_time is in seconds, so the result is meters.
+            player_distance = ((tracking_data[speed_column].fillna(0) * active_mask.astype(float)) * time_deltas).sum() / 1000.0
         else:
             player_distance = 0
         distance.append(player_distance)
@@ -196,6 +219,9 @@ def calculate_player_distances(tracking_data, team_name='Home', name_to_jersey=N
     
     # Sort by distance covered
     summary = summary.sort_values(['Distance [km]'], ascending=False)
+    
+    # Remove players who never appeared in the tracked regulation-time data.
+    summary = summary[summary['Minutes Played'] > 0].copy()
     
     return summary
 
@@ -243,7 +269,7 @@ def main():
             print("Error: Game ID must be an integer")
             sys.exit(1)
     else:
-        game_id_input = input("Enter game ID (default=2): ").strip()
+        game_id_input = input("Enter game ID (Ex: 10517): ").strip()
         if game_id_input:
             try:
                 game_id = int(game_id_input)
@@ -265,8 +291,9 @@ def main():
     
     print("Calculating player velocities...")
     # Calculate player velocities (required for distance calculation)
-    tracking_home = mvel.calc_player_velocities(tracking_home, smoothing=True)
-    tracking_away = mvel.calc_player_velocities(tracking_away, smoothing=True)
+    # Prefer PFF raw speed when present because it preserves the higher-fidelity speed signal.
+    tracking_home = mvel.calc_player_velocities_hybrid(tracking_home, smoothing=True, use_pff_speed=True)
+    tracking_away = mvel.calc_player_velocities_hybrid(tracking_away, smoothing=True, use_pff_speed=True)
     
     # Check if data is PFF format (has player names) or Metrica format (has jersey numbers)
     sample_cols = [c for c in tracking_home.columns if c.startswith('Home_') and c.endswith('_x')]
@@ -292,7 +319,7 @@ def main():
     print_summary_stats(away_summary, 'Away')
     
     # Save results to Excel file with two sheets
-    output_dir = 'Metrica_Output'
+    output_dir = os.path.join('Metrica_Output', 'Distances')
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     

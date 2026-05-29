@@ -176,6 +176,32 @@ def calc_player_velocities_hybrid(team, smoothing=True, filter_='Savitzky-Golay'
             
             # PFF speed is scalar in m/s
             pff_speed = team[pff_speed_col].copy()
+
+            # If the PFF speed column exists but contains only zeros (or negligible values),
+            # fall back to position-derived speed calculation for this player.
+            try:
+                if pff_speed.abs().max() <= 1e-3:
+                    # treat as missing/invalid PFF data and fall back
+                    raise ValueError('PFF speed all zeros; fallback to position-derived')
+            except Exception:
+                # Fallback: compute from positions instead
+                vx = dx / dt
+                vy = dy / dt
+                if maxspeed > 0:
+                    raw_speed = np.sqrt(vx**2 + vy**2)
+                    vx[raw_speed > maxspeed] = np.nan
+                    vy[raw_speed > maxspeed] = np.nan
+                if smoothing and filter_ == 'Savitzky-Golay':
+                    vx.loc[:second_half_idx] = signal.savgol_filter(vx.loc[:second_half_idx], window_length=window, polyorder=polyorder)
+                    vy.loc[:second_half_idx] = signal.savgol_filter(vy.loc[:second_half_idx], window_length=window, polyorder=polyorder)
+                    vx.loc[second_half_idx:] = signal.savgol_filter(vx.loc[second_half_idx:], window_length=window, polyorder=polyorder)
+                    vy.loc[second_half_idx:] = signal.savgol_filter(vy.loc[second_half_idx:], window_length=window, polyorder=polyorder)
+                speed = np.sqrt(vx**2 + vy**2)
+                # add to new_columns at end of loop
+                new_columns[player + "_vx"] = vx
+                new_columns[player + "_vy"] = vy
+                new_columns[player + "_speed"] = speed
+                continue
             
             # Apply maxspeed filter
             if maxspeed > 0:
